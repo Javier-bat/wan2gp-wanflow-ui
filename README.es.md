@@ -58,4 +58,8 @@ node --check plugins/wan2gp-wanflow-ui/assets/editor.js
 
 ## Licencia
 
-Conserva la licencia del proyecto WanGP/Wan2GP y los avisos aplicables de terceros al redistribuirlo.
+El código original de WanFlow UI incluido en este repositorio está bajo la Apache License 2.0; consulta [`LICENSE`](LICENSE).
+
+WanFlow UI es un complemento para WanGP/Wan2GP y no relicencia WanGP/Wan2GP. El texto de la licencia aplicable de WanGP/Wan2GP se conserva en [`LICENSE.txt`](LICENSE.txt). Al redistribuir WanGP/Wan2GP junto con este plugin, conserva esa licencia y los avisos correspondientes.
+
+Los modelos, LoRAs, procesadores, FFmpeg, paquetes de Python y demás materiales de terceros no quedan relicenciados por este proyecto. Mantienen sus propios términos. Consulta [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

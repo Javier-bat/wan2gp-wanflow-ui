@@ -90,4 +90,8 @@ WanFlow UI is compatible with Wan2GP's native runtime rather than with ComfyUI's
 
 ## License
 
-This plugin follows the license terms of the WanGP/Wan2GP project. Preserve the project license and the applicable third-party notices when redistributing it.
+The original WanFlow UI code in this repository is licensed under the Apache License 2.0; see [`LICENSE`](LICENSE).
+
+WanFlow UI is an add-on for WanGP/Wan2GP and does not relicense WanGP/Wan2GP. The applicable WanGP/Wan2GP license text is preserved in [`LICENSE.txt`](LICENSE.txt). When redistributing WanGP/Wan2GP together with this plugin, preserve that license and the applicable notices.
+
+Models, LoRAs, processors, FFmpeg, Python packages, and other third-party materials are not relicensed by this project. They remain subject to their own terms. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

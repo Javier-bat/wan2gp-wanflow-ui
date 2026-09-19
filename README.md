@@ -4,6 +4,28 @@ WanFlow UI is a visual node-based workflow editor for Wan2GP. It provides a Comf
 
 The project is a Wan2GP plugin. It is intentionally not a standalone inference engine and does not attempt to replace Wan2GP's model management or runtime.
 
+## Screenshots
+
+### Model-aware node
+
+Each generation node exposes the ports and controls supported by its selected model. The example below shows a video node with prompt, image, video, audio, mask, end-frame, and injected-frame inputs.
+
+![Generate Video node](assets/screenshots/generate-video-node.png)
+
+### Connected workflow and reusable group
+
+The canvas supports connected branches, previews, masks, postprocessing, and reusable groups that can be enabled or disabled as a unit.
+
+![WanFlow UI workflow canvas](assets/screenshots/workflow-canvas.png)
+
+### Fast previews with disabled nodes and groups
+
+Nodes and reusable groups can be disabled without deleting them. This makes it easy to bypass a mask, generator, or postprocessing stage for a quick preview, then enable it again for the final render.
+
+![Disabled node](assets/screenshots/disabled-node.png)
+
+![Disabling a reusable group](assets/screenshots/disable-group.gif)
+
 ## Features
 
 - Movable nodes, typed ports, SVG connections, zoom, pan, selection, and fit-to-view.

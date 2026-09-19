@@ -1,5 +1,27 @@
 # Wan2GP WanFlow UI
 
+## Capturas
+
+### Nodo adaptado al modelo
+
+Cada nodo de generacion muestra los puertos y controles que admite el modelo seleccionado. El ejemplo muestra un nodo de video con entradas de prompt, imagen, video, audio, mascara, frame final y frames inyectados.
+
+![Nodo Generate Video](assets/screenshots/generate-video-node.png)
+
+### Workflow conectado y grupo reutilizable
+
+El canvas permite ramas conectadas, previews, mascaras, postprocesado y grupos reutilizables que se pueden activar o desactivar como una unidad.
+
+![Canvas de WanFlow UI](assets/screenshots/workflow-canvas.png)
+
+### Previews rapidas con nodos y grupos desactivados
+
+Los nodos y grupos reutilizables se pueden desactivar sin borrarlos. Asi es posible saltear una mascara, una generacion o una etapa de postprocesado para hacer una preview rapida y volver a activarla para el render final.
+
+![Nodo desactivado](assets/screenshots/disabled-node.png)
+
+![Desactivar un grupo reutilizable](assets/screenshots/disable-group.gif)
+
 WanFlow UI es un editor visual de workflows por nodos para Wan2GP. Ofrece un canvas inspirado en ComfyUI y conserva los contratos nativos de Wan2GP para modelos, procesadores, medios, cola y FFmpeg.
 
 Es un plugin de Wan2GP. No es un motor de inferencia independiente ni reemplaza la administración de modelos o el runtime de Wan2GP.

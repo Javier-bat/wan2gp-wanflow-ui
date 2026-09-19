@@ -1,0 +1,53 @@
+{
+  "schema": "wan2gp-wanflow-ui",
+  "version": 1,
+  "name": "Concatenate two runtime videos",
+  "settings": {
+    "aspect_ratio": "source",
+    "unload_on_model_change": false
+  },
+  "nodes": [
+    {
+      "id": "input-video-0",
+      "type": "input_video",
+      "title": "Video A",
+      "position": {"x": 80, "y": 100},
+      "params": {"slot": 0},
+      "ui": {},
+      "enabled": true
+    },
+    {
+      "id": "input-video-1",
+      "type": "input_video",
+      "title": "Video B",
+      "position": {"x": 80, "y": 280},
+      "params": {"slot": 1},
+      "ui": {},
+      "enabled": true
+    },
+    {
+      "id": "concat",
+      "type": "ffmpeg_concat",
+      "title": "Concatenate videos",
+      "position": {"x": 420, "y": 180},
+      "params": {},
+      "ui": {},
+      "enabled": true
+    }
+  ],
+  "edges": [
+    {
+      "id": "video-a",
+      "source": {"node": "input-video-0", "port": "video"},
+      "target": {"node": "concat", "port": "videos"},
+      "type": "VIDEO"
+    },
+    {
+      "id": "video-b",
+      "source": {"node": "input-video-1", "port": "video"},
+      "target": {"node": "concat", "port": "videos"},
+      "type": "VIDEO"
+    }
+  ],
+  "groups": []
+}

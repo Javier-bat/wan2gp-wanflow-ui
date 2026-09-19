@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+
+# User-created workflows and reusable blocks.
+workflows/*
+!workflows/.gitkeep
+blocks/*
+!blocks/.gitkeep
+
+# Runtime output is local data, never a repository artifact.
+workflow_outputs/*
+!workflow_outputs/.gitkeep
+
+# Local editor and test files.
+.pytest_cache/
+.coverage
+__pycache__/

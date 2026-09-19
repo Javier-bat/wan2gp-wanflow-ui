@@ -1,0 +1,68 @@
+{
+  "schema": "wan2gp-wanflow-ui",
+  "version": 1,
+  "name": "AI analysis to image prompt",
+  "settings": {
+    "aspect_ratio": "source",
+    "unload_on_model_change": false
+  },
+  "nodes": [
+    {
+      "id": "input-image",
+      "type": "input_image",
+      "title": "Image to inspect",
+      "position": {"x": 60, "y": 160},
+      "params": {"slot": 0},
+      "ui": {},
+      "enabled": true
+    },
+    {
+      "id": "instruction",
+      "type": "text",
+      "title": "AI instruction",
+      "position": {"x": 60, "y": 360},
+      "params": {"text": "Describe the visible subject and setting as a concise image prompt."},
+      "ui": {},
+      "enabled": true
+    },
+    {
+      "id": "analysis",
+      "type": "ai_analyze",
+      "title": "AI analysis",
+      "position": {"x": 390, "y": 180},
+      "params": {"model": 3, "max_tokens": 192, "output_name": "analysis"},
+      "ui": {},
+      "enabled": true
+    },
+    {
+      "id": "generate",
+      "type": "generate_image",
+      "title": "Generate image",
+      "position": {"x": 760, "y": 180},
+      "params": {"model_type": "", "prompt": "$analysis", "settings": {}},
+      "ui": {},
+      "enabled": true
+    }
+  ],
+  "edges": [
+    {
+      "id": "image-to-analysis",
+      "source": {"node": "input-image", "port": "image"},
+      "target": {"node": "analysis", "port": "images"},
+      "type": "IMAGE"
+    },
+    {
+      "id": "instruction-to-analysis",
+      "source": {"node": "instruction", "port": "text"},
+      "target": {"node": "analysis", "port": "instruction"},
+      "type": "TEXT"
+    },
+    {
+      "id": "analysis-to-generation",
+      "source": {"node": "analysis", "port": "text"},
+      "target": {"node": "generate", "port": "prompt"},
+      "type": "TEXT"
+    }
+  ],
+  "groups": []
+}

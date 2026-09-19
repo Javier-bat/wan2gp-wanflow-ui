@@ -1,0 +1,61 @@
+# Wan2GP WanFlow UI
+
+WanFlow UI es un editor visual de workflows por nodos para Wan2GP. Ofrece un canvas inspirado en ComfyUI y conserva los contratos nativos de Wan2GP para modelos, procesadores, medios, cola y FFmpeg.
+
+Es un plugin de Wan2GP. No es un motor de inferencia independiente ni reemplaza la administración de modelos o el runtime de Wan2GP.
+
+## Características
+
+- Nodos movibles, puertos tipados, conexiones SVG, zoom, desplazamiento y ajuste de vista.
+- Ejecución topológica con ramas y convergencias.
+- Generación, edición, inpainting, referencias, máscaras, audio, LoRAs, resolución, aspect ratio y controles nativos por modelo.
+- Análisis IA con salidas de texto y variables del workflow.
+- Postprocesadores descubiertos desde el catálogo instalado de Wan2GP.
+- Operaciones FFmpeg tipadas usando los binarios administrados por Wan2GP.
+- Previews de imágenes, videos, audio y máscaras.
+- Grupos de color reutilizables con activación individual por nodo o por grupo.
+- Bloques reutilizables guardados como subgrafos editables.
+
+## Requisitos
+
+- Una instalación compatible de Wan2GP.
+- El entorno Python y Gradio provisto por Wan2GP.
+- El catálogo de modelos y postprocesadores instalados en Wan2GP.
+- Los binarios `ffmpeg` y `ffprobe` administrados por Wan2GP.
+
+No se necesitan librerías JavaScript externas. Los modelos, LoRAs, procesadores y archivos multimedia grandes no están incluidos.
+
+## Instalación
+
+Copia la carpeta `wan2gp-wanflow-ui` dentro de la carpeta `plugins` de Wan2GP, reinicia Wan2GP y abre la pestaña `WanFlow UI`.
+
+## Uso básico
+
+1. Agrega nodos desde la paleta.
+2. Arrastra desde un puerto de salida hasta una entrada compatible.
+3. Selecciona un nodo para editarlo en el Inspector.
+4. Carga medios runtime y asigna los nodos de entrada a sus slots.
+5. Guarda el workflow o pulsa `Run`.
+
+El runner valida puertos, entradas obligatorias, capacidades del modelo y ciclos antes de ejecutar.
+
+El nodo `Magic Mask` acepta una imagen o un video y palabras clave como `person, car, sky`. Conecta `mask_image` a un nodo de inpainting de imagen o `mask_video` a uno de video. Usa los recursos administrados por Wan2GP y los descarga la primera vez que hacen falta.
+
+Los nodos de generación también aceptan URLs remotas de LoRA. Agrégalas desde la sección LoRAs del Inspector y configura su fuerza; Wan2GP resuelve y guarda la URL en caché al ejecutar el workflow.
+
+## Grupos y bloques
+
+Selecciona varios nodos con `Shift` y usa `+ Group` o `Ctrl+G`. Los grupos pueden renombrarse, colorearse, moverse y activarse o desactivarse. Un grupo de postprocesado simple puede desactivarse para obtener una preview rápida.
+
+Desde el Inspector del grupo, `Save as reusable block` guarda un subgrafo editable que luego aparece en la paleta.
+
+## Desarrollo
+
+```powershell
+venv\Scripts\python.exe -m unittest discover -s plugins/wan2gp-wanflow-ui/tests -v
+node --check plugins/wan2gp-wanflow-ui/assets/editor.js
+```
+
+## Licencia
+
+Conserva la licencia del proyecto WanGP/Wan2GP y los avisos aplicables de terceros al redistribuirlo.

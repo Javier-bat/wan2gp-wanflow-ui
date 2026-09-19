@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wan2GP WanFlow UI</title>
+  <style>/* WORKFLOWS_V2_CSS */ .edge{pointer-events:stroke;cursor:pointer}.edge.selected{stroke:#fff;stroke-width:4}.inspector details{margin-top:10px}.inspector summary{color:var(--muted);cursor:pointer;font-size:11px}.inspector details textarea{margin-top:7px}</style>
+</head>
+<body>
+  <div id="app">
+    <header class="toolbar">
+      <div class="brand">WanFlow <span>UI</span></div>
+      <input id="nodeSearch" placeholder="Search nodes..." aria-label="Search nodes">
+      <button data-action="add" data-node="generate_image">+ Image</button>
+      <button data-action="add" data-node="generate_video">+ Video</button>
+      <button data-action="add" data-node="postprocess">+ Process</button>
+      <button data-action="add" data-node="ffmpeg_concat">+ FFmpeg</button>
+      <button data-action="group">+ Group</button>
+      <button data-action="fit">Fit</button>
+      <button data-action="delete">Delete</button>
+      <button data-action="save" class="primary">Save</button>
+      <button data-action="run" class="primary">Run</button>
+    </header>
+    <main class="workspace">
+      <aside class="palette panel">
+        <h3>Nodes</h3>
+        <div id="palette"></div>
+      </aside>
+      <section id="viewport" class="viewport">
+        <svg id="edges" aria-hidden="true"></svg>
+        <div id="canvas"></div>
+        <div id="empty" class="empty">Add a node to begin.</div>
+      </section>
+      <aside class="inspector panel">
+        <h3>Inspector</h3>
+        <div id="inspectorEmpty">Select a node.</div>
+        <div id="inspector"></div>
+      </aside>
+    </main>
+    <footer id="status" class="status">Ready</footer>
+  </div>
+  <script>
+    window.W2GP_INITIAL_GRAPH = JSON.parse(atob('/* WORKFLOWS_V2_GRAPH */'));
+    window.W2GP_NODE_CATALOG = JSON.parse(atob('/* WORKFLOWS_V2_CATALOG */'));
+    window.W2GP_STATUS = '/* WORKFLOWS_V2_STATUS */';
+  </script>
+  <script>/* WORKFLOWS_V2_JS */</script>
+</body>
+</html>

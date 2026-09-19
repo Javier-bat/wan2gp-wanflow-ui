@@ -1,0 +1,38 @@
+{
+  "schema": "wan2gp-wanflow-ui",
+  "version": 1,
+  "name": "Image sequence",
+  "settings": {
+    "aspect_ratio": "source",
+    "unload_on_model_change": false
+  },
+  "nodes": [
+    {
+      "id": "input-image-0",
+      "type": "input_image",
+      "title": "Input image",
+      "position": {"x": 80, "y": 140},
+      "params": {"slot": 0},
+      "ui": {},
+      "enabled": true
+    },
+    {
+      "id": "image-sequence",
+      "type": "image_sequence",
+      "title": "Image sequence",
+      "position": {"x": 400, "y": 140},
+      "params": {"fps": 24},
+      "ui": {},
+      "enabled": true
+    }
+  ],
+  "edges": [
+    {
+      "id": "image-to-sequence",
+      "source": {"node": "input-image-0", "port": "image"},
+      "target": {"node": "image-sequence", "port": "images"},
+      "type": "IMAGE"
+    }
+  ],
+  "groups": []
+}

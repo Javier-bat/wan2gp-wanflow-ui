@@ -1,0 +1,9 @@
+{
+  "name": "Wan2GP WanFlow UI",
+  "author": "Javier",
+  "version": "0.1.0",
+  "description": "Visual node workflow editor for Wan2GP.",
+  "date": "2026-09-19",
+  "wan2gp_version": "",
+  "uninstallable": true
+}

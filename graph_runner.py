@@ -59,6 +59,25 @@ class _Callbacks:
             self.callback(str(getattr(update, "status", "") or ""), progress)
 
 
+class _EnhancerProgress:
+    """Small Gradio-compatible progress adapter for Wan2GP's native enhancer."""
+
+    def __init__(self, callback=None):
+        self.callback = callback
+
+    def __call__(self, value, desc="", total=None, unit="steps", **_kwargs):
+        del unit
+        if not self.callback:
+            return
+        try:
+            current = float(value[0] if isinstance(value, (tuple, list)) else value)
+            maximum = float(total or (value[1] if isinstance(value, (tuple, list)) and len(value) > 1 else 1) or 1)
+            fraction = max(0.0, min(1.0, current / maximum)) if maximum else 0.0
+        except (TypeError, ValueError, ZeroDivisionError):
+            fraction = 0.0
+        self.callback(str(desc or "Enhancing prompt"), fraction)
+
+
 def _job_client_ids(job) -> set[str]:
     return {str(value or "").strip() for value in (getattr(job, "webui_client_ids", ()) or ()) if str(value or "").strip()}
 
@@ -218,6 +237,108 @@ def _submit_magic_mask(source: str, params: dict[str, Any], output_root: Path, s
             release_GPU_ressources(state, process_id)
 
 
+def _connected_config(inputs: dict[str, Any], port: str) -> dict[str, Any]:
+    value = inputs.get(port)
+    if isinstance(value, list):
+        value = next((item for item in reversed(value) if isinstance(item, dict)), None)
+    return value if isinstance(value, dict) else {}
+
+
+_NUMERIC_NATIVE_SETTINGS = {
+    "num_inference_steps", "steps", "video_length", "cfg_scale", "guidance_scale",
+    "flow_shift", "shift", "shift_scale", "denoising_strength", "sliding_window_size",
+    "sliding_window_overlap", "skip_steps_multiplier", "skip_steps_start_step_perc",
+    "attention_sparsity", "image_refs_relative_size",
+}
+
+_MODEL_DEFAULT_KEYS = {
+    "num_inference_steps", "steps", "video_length", "cfg_scale", "guidance_scale", "guidance_phases",
+    "guidance2_scale", "guidance3_scale", "flow_shift", "shift", "shift_scale", "sample_solver",
+    "denoising_strength", "sliding_window_size", "sliding_window_overlap", "sub_parallel_window_size",
+    "sub_parallel_window_overlap", "skip_steps_cache_type", "skip_steps_multiplier",
+    "skip_steps_start_step_perc", "override_attention", "attention_sparsity", "image_refs_relative_size",
+}
+
+
+def _sanitize_native_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Remove stale editor metadata accidentally saved as model values.
+
+    Older editor versions could persist a control definition (or a boolean
+    capability flag) under a numeric setting. Wan2GP should then use the
+    selected model's native default instead of receiving an invalid value.
+    """
+    for key in _NUMERIC_NATIVE_SETTINGS:
+        if key not in settings:
+            continue
+        value = settings[key]
+        if isinstance(value, bool) or isinstance(value, (dict, list, tuple)):
+            settings.pop(key, None)
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                settings.pop(key, None)
+                continue
+            try:
+                settings[key] = float(value)
+            except ValueError:
+                settings.pop(key, None)
+    return settings
+
+
+def _apply_model_defaults(settings: dict[str, Any], plugin, model_type: str) -> dict[str, Any]:
+    """Fill omitted controls from Wan2GP's actual factory settings."""
+    get_defaults = getattr(plugin, "get_default_settings", None)
+    if not callable(get_defaults):
+        return settings
+    try:
+        defaults = get_defaults(model_type)
+    except Exception:
+        return settings
+    if not isinstance(defaults, dict):
+        return settings
+    for key in _MODEL_DEFAULT_KEYS:
+        value = defaults.get(key)
+        if value not in (None, "") and key not in settings:
+            settings[key] = copy.deepcopy(value)
+    return settings
+
+
+def _apply_connected_configuration(settings: dict[str, Any], params: dict[str, Any], inputs: dict[str, Any], model_type: str, model_def: dict[str, Any] | None = None, model_family: str = "") -> dict[str, Any]:
+    """Apply typed configuration-node outputs after inline node values.
+
+    A connected configuration node intentionally wins over the generation
+    node's inline value, matching the familiar ComfyUI override workflow.
+    """
+    resolution = _connected_config(inputs, "resolution_config")
+    for key in ("resolution", "resolution_tier", "aspect_ratio"):
+        if resolution.get(key) not in (None, ""):
+            params[key] = resolution[key]
+
+    sampling = _connected_config(inputs, "sampling_config")
+    attention = _connected_config(inputs, "attention_config")
+    reference = _connected_config(inputs, "reference_composition")
+    for source in (sampling, attention, reference):
+        for key, value in source.items():
+            if value not in (None, ""):
+                settings[key] = value
+
+    stack = _connected_config(inputs, "lora_stack")
+    if stack:
+        stack_model = str(stack.get("base_model_type") or stack.get("model_type") or "")
+        generation_base = str((model_def or {}).get("base_model_type") or (model_def or {}).get("architecture") or model_type)
+        accepted_families = {model_type, generation_base, model_family, str((model_def or {}).get("lora_family") or "")}
+        accepted_families.discard("")
+        if stack_model and stack_model not in accepted_families:
+            raise ValueError(f"LoRA Stack base '{stack_model}' does not match generation model family '{generation_base}'.")
+        values = stack.get("activated_loras") or []
+        if isinstance(values, str):
+            values = [values]
+        settings["activated_loras"] = [str(value).strip() for value in values if str(value).strip()]
+        settings["loras_multipliers"] = str(stack.get("loras_multipliers") or "")
+    return params
+
+
 def _submit_generation(plugin, api_session, main_state, node, inputs, variables, workflow_settings, output_root, callback, cancel_check):
     engine = _runtime_engine()
     params = node.get("params") or {}
@@ -226,6 +347,8 @@ def _submit_generation(plugin, api_session, main_state, node, inputs, variables,
     if not model_type:
         raise ValueError(f"{node['title']} has no model selected.")
     settings["model_type"] = model_type
+    _sanitize_native_settings(settings)
+    _apply_model_defaults(settings, plugin, model_type)
     node_type = str(node.get("type") or "")
     if node_type.endswith("_image") or node_type == "generate_image":
         settings["image_mode"] = 1
@@ -246,6 +369,19 @@ def _submit_generation(plugin, api_session, main_state, node, inputs, variables,
         settings["activated_loras"] = [str(value).strip() for value in values if str(value).strip()]
     if "loras_multipliers" in params:
         settings["loras_multipliers"] = str(params.get("loras_multipliers") or "")
+    model_family = ""
+    resolve_family = getattr(plugin, "get_model_family", None)
+    if callable(resolve_family):
+        try:
+            model_family = str(resolve_family(model_type, for_ui=True) or "").strip()
+        except TypeError:
+            try:
+                model_family = str(resolve_family(model_type) or "").strip()
+            except Exception:
+                model_family = ""
+        except Exception:
+            model_family = ""
+    _apply_connected_configuration(settings, params, inputs, model_type, model_def, model_family)
     prompt_values = inputs.get("prompt") or []
     if prompt_values:
         settings["prompt"] = _substitute(prompt_values[-1], variables)
@@ -306,16 +442,27 @@ def _submit_generation(plugin, api_session, main_state, node, inputs, variables,
         if requested_resolution and any(str(value).lower() == requested_resolution for _label, value in choices):
             settings["resolution"] = requested_resolution
         else:
+            requested_tier = str(params.get("resolution_tier") or "720p").strip().lower()
+            available_tiers = engine.available_resolution_tiers(choices)
+            if requested_tier not in available_tiers:
+                raise ValueError(
+                    f"Resolution tier '{requested_tier}' is not available for model '{model_type}'. "
+                    f"Available tiers: {', '.join(available_tiers) or 'none'}."
+                )
             settings["resolution"] = engine.resolution_for_tier(
-                choices, params.get("resolution_tier") or "720p", aspect_ratio, int(model_def.get("vae_block_size", 16) or 16),
+                choices, requested_tier, aspect_ratio, int(model_def.get("vae_block_size", 16) or 16),
             )
+    except ValueError:
+        raise
     except Exception:
+        # Keep the historical fallback only for unavailable optional
+        # resolution metadata, not for an explicitly invalid tier.
         pass
     # Apply the same model-aware visibility/compatibility cleanup used by
     # Wan2GP's main generator. This prevents settings from a previous model
     # from leaking into the selected model's request.
     settings = clean_metadata_settings(
-        settings,
+        _sanitize_native_settings(settings),
         model_def,
         attention_mode=str(settings.get("override_attention") or ""),
     )
@@ -326,6 +473,143 @@ def _submit_generation(plugin, api_session, main_state, node, inputs, variables,
     result = _wait_job(job, cancel_check=cancel_check, callback=callback, api_session=api_session)
     expected = engine.expected_output_kind(settings, model_def)
     return engine.select_generated_path(result, expected)
+
+
+def _prompt_enhancer_choices(plugin, model_def, *, audio_only: bool, image_mode: int):
+    resolver = getattr(plugin, "get_prompt_enhancer_choices", None)
+    if callable(resolver):
+        try:
+            return resolver(model_def, audio_only, image_mode, False)
+        except TypeError:
+            return resolver(model_def, audio_only, image_mode)
+    definition = model_def.get("prompt_enhancer_def") if isinstance(model_def, dict) else None
+    if isinstance(definition, dict):
+        labels = definition.get("labels") or {}
+        mode_letter = "P" if image_mode > 0 else "V"
+        choices = []
+        for key, label in labels.items():
+            key = str(key or "")
+            filters = {letter for letter in key if letter in "VP"}
+            if filters and mode_letter not in filters:
+                continue
+            value = key.replace("V", "").replace("P", "")
+            if value:
+                choices.append((str(label or value), value))
+        return choices, str(definition.get("default") or ""), definition
+    allowed = model_def.get("prompt_enhancer_choices_allowed") if isinstance(model_def, dict) else None
+    if not isinstance(allowed, (list, tuple)):
+        allowed = ["T"] if audio_only else ["T", "TI"]
+    return [(str(value), value) for value in allowed], "", None
+
+
+def _prepare_prompt_enhancer(plugin):
+    """Drop stale enhancer and generation offload state before a model switch."""
+    reset = getattr(plugin, "reset_prompt_enhancer", None)
+    reset_if_requested = getattr(plugin, "reset_prompt_enhancer_if_requested", None)
+    if callable(reset):
+        reset()
+    if callable(reset_if_requested):
+        reset_if_requested()
+    release_model = getattr(plugin, "release_model", None)
+    if callable(release_model):
+        release_model()
+
+
+def _cleanup_prompt_enhancer(plugin):
+    reset = getattr(plugin, "reset_prompt_enhancer", None)
+    reset_if_requested = getattr(plugin, "reset_prompt_enhancer_if_requested", None)
+    if callable(reset):
+        reset()
+    if callable(reset_if_requested):
+        reset_if_requested()
+
+
+def _submit_prompt_enhancer(plugin, main_state, node, inputs, variables, callback, cancel_check):
+    params = node.get("params") or {}
+    model_type = str(params.get("model_type") or "").strip()
+    if not model_type:
+        raise ValueError(f"{node['title']} needs a target model.")
+    model_def = plugin.get_model_def(model_type)
+    if not isinstance(model_def, dict):
+        raise ValueError(f"Prompt enhancer model '{model_type}' is no longer available.")
+
+    prompt_values = inputs.get("prompt") or []
+    prompt = _substitute(prompt_values[-1] if prompt_values else params.get("prompt") or "", variables).strip()
+    if not prompt:
+        raise ValueError(f"{node['title']} needs a prompt input or inline prompt.")
+
+    target = str(params.get("target_media") or "").strip().lower()
+    metadata = model_def.get("metadata") or {}
+    outputs = list(metadata.get("main_output") or metadata.get("outputs") or [])
+    if target not in {"image", "video", "audio"}:
+        target = "audio" if "audio" in outputs else "image" if "image" in outputs else "video"
+    normalized_outputs = {str(value).lower() for value in outputs}
+    if normalized_outputs and target not in normalized_outputs:
+        raise ValueError(f"Prompt enhancer target '{target}' is incompatible with model '{model_type}'.")
+    is_image = target == "image"
+    audio_only = target == "audio"
+    choices, default, _definition = _prompt_enhancer_choices(plugin, model_def, audio_only=audio_only, image_mode=1 if is_image else 0)
+    allowed_modes = {str(value) for _label, value in choices}
+    mode = str(params.get("mode") or default or "").strip()
+    if not mode:
+        mode = next(iter(allowed_modes), "")
+    if not mode or mode not in allowed_modes:
+        raise ValueError(f"Prompt enhancer mode '{mode or '(empty)'}' is not supported by model '{model_type}'.")
+
+    images = []
+    for value in inputs.get("images") or []:
+        path = _first_path([value])
+        if path:
+            images.append(path)
+    if "I" in mode and not images:
+        raise ValueError(f"Prompt enhancer mode '{mode}' requires at least one connected image.")
+    if images and "I" not in mode:
+        raise ValueError(f"Prompt enhancer mode '{mode}' does not accept image inputs; choose an image-reference mode.")
+    if cancel_check and cancel_check():
+        raise InterruptedError("Workflow cancelled.")
+
+    enhancer = getattr(plugin, "exec_prompt_enhancer_engine", None)
+    if not callable(enhancer):
+        raise RuntimeError("Wan2GP native prompt enhancer is unavailable in this session.")
+    _prepare_prompt_enhancer(plugin)
+    progress = _EnhancerProgress(callback)
+    try:
+        enhanced = enhancer(
+            main_state,
+            model_type,
+            model_def,
+            mode,
+            [prompt],
+            [None],
+            images or None,
+            is_image,
+            audio_only,
+            int(_number(params.get("seed"), -1)),
+            progress,
+            -1,
+            enhancer_kwargs={"image_prompt_type": "", "video_prompt_type": "", "audio_prompt_type": ""},
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "illegal memory access" in message.casefold():
+            raise RuntimeError(
+                "Prompt Enhancer encountered a CUDA illegal memory access. "
+                "Restart Wan2GP before retrying."
+            ) from exc
+        raise
+    finally:
+        _cleanup_prompt_enhancer(plugin)
+    if isinstance(enhanced, (list, tuple)):
+        enhanced = enhanced[0] if enhanced else ""
+    if isinstance(enhanced, (list, tuple)):
+        enhanced = enhanced[0] if enhanced else ""
+    answer = str(enhanced or "").strip()
+    if not answer:
+        raise RuntimeError("Wan2GP prompt enhancer returned an empty prompt.")
+    output_name = str(params.get("output_name") or "enhanced_prompt").strip()
+    if output_name:
+        variables[output_name] = answer
+    return answer
 
 
 def _submit_postprocess(api_session, node, source, inputs, callback, cancel_check):
@@ -420,6 +704,38 @@ def run_graph(plugin, api_session, main_state: dict[str, Any], graph: dict[str, 
             result["image" if node_type == "input_image" else "video" if node_type == "input_video" else "audio" if node_type == "input_audio" else "mask" if node_type in {"input_mask_image", "input_mask_video"} else "media"] = runtime_paths[slot]
         elif node_type == "text":
             result["text"] = _substitute(params.get("text") or params.get("value") or "", variables)
+        elif node_type == "resolution_config":
+            result["settings"] = {
+                key: params[key]
+                for key in ("resolution", "resolution_tier", "aspect_ratio")
+                if params.get(key) not in (None, "") and not (key == "resolution_tier" and str(params.get(key)).lower() == "auto")
+            }
+        elif node_type == "lora_stack":
+            values = params.get("activated_loras") or []
+            if isinstance(values, str):
+                values = [values]
+            result["stack"] = {
+                "model_type": str(params.get("model_type") or ""),
+                "base_model_type": str(params.get("base_model_type") or params.get("model_type") or ""),
+                "activated_loras": [str(value).strip() for value in values if str(value).strip()],
+                "loras_multipliers": str(params.get("loras_multipliers") or ""),
+            }
+        elif node_type == "sampling_config":
+            result["settings"] = {
+                key: params[key]
+                for key in ("num_inference_steps", "steps", "sample_solver", "cfg_scale", "guidance_scale", "flow_shift", "shift", "denoising_strength")
+                if params.get(key) not in (None, "")
+            }
+        elif node_type == "attention_config":
+            result["settings"] = {
+                key: params[key]
+                for key in ("override_attention", "attention_sparsity", "skip_steps_cache_type", "skip_steps_multiplier", "skip_steps_start_step_perc")
+                if params.get(key) not in (None, "")
+            }
+        elif node_type == "reference_composition":
+            result["settings"] = {
+                "image_refs_relative_size": params.get("image_refs_relative_size")
+            } if params.get("image_refs_relative_size") not in (None, "") else {}
         elif node_type in GENERATION_NODE_TYPES:
             result["output"] = _submit_generation(plugin, api_session, main_state, node, inputs, variables, graph.get("settings") or {}, root, callback, cancel_check)
         elif node_type == "ai_analyze":
@@ -428,6 +744,8 @@ def run_graph(plugin, api_session, main_state: dict[str, Any], graph: dict[str, 
             answer = _runtime_ai().run_ai_analysis(getattr(plugin, "_deepy", None), main_state, params.get("model", 3), instruction, [path for path in images if path], params.get("max_tokens", 192), reset_prompt_enhancer=getattr(plugin, "reset_prompt_enhancer", None), reset_prompt_enhancer_if_requested=getattr(plugin, "reset_prompt_enhancer_if_requested", None))
             variables[str(params.get("output_name") or "analysis")] = answer
             result["text"] = answer
+        elif node_type == "prompt_enhancer":
+            result["text"] = _submit_prompt_enhancer(plugin, main_state, node, inputs, variables, callback, cancel_check)
         elif node_type in {"last_frame", "extract_frame"}:
             source = _first_path(inputs.get("video") or [])
             if not source:

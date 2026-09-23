@@ -40,6 +40,70 @@
     const outputs=(model?.capabilities?.main_output||[]).join('+');
     return outputs ? `${model.name||model.model_type} [${outputs}]` : (model.name||model.model_type);
   }
+  function promptEnhancerTarget(model,params){
+    const requested=String(params?.target_media||'').toLowerCase();
+    if(['image','video','audio'].includes(requested))return requested;
+    const outputs=(model?.capabilities?.main_output||model?.capabilities?.outputs||[]).map(value=>String(value).toLowerCase());
+    return outputs.includes('audio')?'audio':outputs.includes('image')?'image':'video';
+  }
+  function promptEnhancerChoices(model,target){return model?.prompt_enhancer?.[target]?.choices||[];}
+  function modelBaseType(model){return String(model?.lora_family||model?.base_model_type||model?.model_type||'');}
+  function modelBaseLabel(model){return String(model?.lora_family_name||model?.base_name||model?.name||model?.lora_family||model?.base_model_type||model?.model_type||'');}
+  function compatibleBaseModels(models){const seen=new Map();for(const model of models||[]){const key=modelBaseType(model);if(key&&!seen.has(key))seen.set(key,{model_type:key,name:modelBaseLabel(model)});}return [...seen.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name)));}
+  function modelsForBase(models,base){return (models||[]).filter(model=>!base||modelBaseType(model)===base);}
+  function sanitizeNativeSettings(params){
+    const numeric=new Set(['num_inference_steps','steps','video_length','cfg_scale','guidance_scale','flow_shift','shift','shift_scale','denoising_strength','sliding_window_size','sliding_window_overlap','skip_steps_multiplier','skip_steps_start_step_perc','attention_sparsity','image_refs_relative_size']);
+    const clean=settings=>{if(!settings||typeof settings!=='object')return;for(const key of numeric){if(!(key in settings))continue;const value=settings[key];if(typeof value==='boolean'||value===null||typeof value==='object'){delete settings[key];continue;}if(typeof value==='string'){if(value.trim()===''||!Number.isFinite(Number(value))){delete settings[key];}else settings[key]=Number(value);}}};
+    clean(params.settings);for(const settings of Object.values(params.settings_by_model||{}))clean(settings);
+  }
+  function modelDefaults(params,model){
+    sanitizeNativeSettings(params);
+    const defaults=model?.defaults||{};params.settings=params.settings||{};
+    const steps=defaults.num_inference_steps??defaults.steps;
+    if(!Object.prototype.hasOwnProperty.call(params,'steps')&&steps!=null){params.steps=Number(steps);params.num_inference_steps=Number(steps);}
+    for(const setting of model?.native_settings||[]){if(defaults[setting.key]==null||defaults[setting.key]==='')continue;const target=setting.custom?(params.settings.custom_settings||(params.settings.custom_settings={})):params.settings;if(target[setting.key]==null||target[setting.key]==='')target[setting.key]=clone(defaults[setting.key]);}
+  }
+  function configSummary(node){
+    const p=node.params||{};
+    const labels={resolution_config:'Resolution',lora_stack:'LoRAs',sampling_config:'Sampling',attention_config:'Attention / Cache',reference_composition:'Reference'};
+    const rows=[];
+    const row=(label,value,klass='')=>{if(value!==undefined&&value!==null&&String(value)!=='')rows.push(`<div class="config-summary-row ${klass}"><span class="config-summary-title">${escapeHtml(label)}</span><span class="config-summary-value">${escapeHtml(value)}</span></div>`);};
+    if(node.type==='resolution_config'){
+      row('Tier',p.resolution_tier&&p.resolution_tier!=='auto'?p.resolution_tier:'Auto');
+      row('Aspect',p.aspect_ratio||'Workflow ratio');
+      row('Exact',p.resolution||'Model default');
+    }else if(node.type==='lora_stack'){
+      const names=loraValues(p),weights=parseLoraMultipliers(p.loras_multipliers),legacyModel=modelById(p.model_type),familyKey=p.base_model_type||modelBaseType(legacyModel)||p.model_type, family=catalog.base_models?.find(item=>item.model_type===familyKey)?.name||familyKey||'No base model';
+      row('Family',family,'config-summary-family');
+      if(names.length)names.forEach((name,index)=>row(name.split(/[\\/]/).pop(),String(weights[index]??1),'lora-summary-row'));
+      else row('Stack','No active LoRAs');
+    }else if(node.type==='sampling_config'){
+      row('Sampler',p.sample_solver||'Model default');
+      row('Steps',p.num_inference_steps||p.steps||'Model default');
+      row('CFG',p.cfg_scale!==''&&p.cfg_scale!=null?p.cfg_scale:'Model default');
+      row('Guidance',p.guidance_scale!==''&&p.guidance_scale!=null?p.guidance_scale:'Model default');
+      row('Shift',p.flow_shift||p.shift||'Model default');
+    }else if(node.type==='attention_config'){
+      row('Attention',p.override_attention||'Model default');
+      row('Cache',p.skip_steps_cache_type||'Auto / disabled');
+      row('Multiplier',p.skip_steps_multiplier);
+      row('Start',p.skip_steps_start_step_perc===undefined?'':`${p.skip_steps_start_step_perc}%`);
+    }else if(node.type==='reference_composition')row('Reference size',p.image_refs_relative_size?`${p.image_refs_relative_size}% of output`:'Model default');
+    else if(node.type==='prompt_enhancer'){
+      const model=modelById(p.model_type);
+      row('Target',model?modelLabel(model):'Select model');
+      row('Mode',p.mode||'Select compatible mode');
+    }
+    if(generationTypes.includes(node.type)){
+      const native=p.settings||{}, linked=(graph.edges||[]).filter(edge=>edge.target?.node===node.id&&labels[edge.target?.port]);
+      row('Steps',p.steps||p.num_inference_steps||'Model default');
+      row('Sampler',native.sample_solver||'Model default');
+      const loras=loraValues(p),weights=parseLoraMultipliers(p.loras_multipliers);
+      loras.forEach((name,index)=>row(name.split(/[\\/]/).pop(),String(weights[index]??1),'lora-summary-row'));
+      [...new Set(linked.map(edge=>labels[edge.target.port]))].forEach(label=>row('Linked',label));
+    }
+    return rows.length?`<div class="config-summary"><div class="config-summary-heading">${escapeHtml(labels[node.type]||'Config')}</div>${rows.join('')}</div>`:'';
+  }
   function nativeSettingId(key){return `editNative_${String(key).replace(/[^A-Za-z0-9_]/g,'_')}`;}
   function nativeSettingValue(params,setting){
     const settings=params.settings||{};
@@ -63,6 +127,7 @@
     if(!settings.length)return '<div class="hint">This model has no additional native controls exposed by Wan2GP.</div>';
     return `<details open><summary>Model-native settings</summary><div class="native-settings">${settings.map(setting=>nativeSettingHtml(setting,params)).join('')}</div><div class="hint">These controls come from the selected model metadata. Empty values keep Wan2GP defaults.</div></details>`;
   }
+  function configSetting(model,key,id,value,placeholder){const setting=(model?.native_settings||[]).find(item=>item.key===key);if(setting?.choices?.length){const choices=setting.choices.some(option=>String(option.value)==='')?setting.choices:[{label:'Wan2GP default',value:''},...setting.choices];return `<label>${escapeHtml(setting.label||key)}</label><select id="${id}">${choices.map(option=>`<option value="${escapeAttr(option.value??'')}" ${String(option.value??'')===String(value??'')?'selected':''}>${escapeHtml(option.label??option.value??'')}</option>`).join('')}</select>`;}return `<label>${escapeHtml(setting?.label||key)}</label><input id="${id}" value="${escapeAttr(value??'')}" placeholder="${escapeAttr(placeholder||'Keep model default')}">`;}
   function readNativeSettings(model,params){
     if(!model)return;
     params.settings=params.settings||{};
@@ -138,14 +203,27 @@
     if(caps.inpainting || type.startsWith('inpaint_')) ports.push({name:'mask',direction:'in',type:String(output).toLowerCase() === 'image' ? 'MASK_IMAGE' : 'MASK_VIDEO'});
     if(image.end) ports.push({name:'end_frame',direction:'in',type:'IMAGE',optional:true});
     if(image.injected_frames) ports.push({name:'frames',direction:'in',type:'IMAGE[]',variadic:true,optional:true});
+    if(type!=='generate_audio'){
+      ports.push({name:'resolution_config',direction:'in',type:'RESOLUTION_SETTINGS',optional:true});
+      ports.push({name:'sampling_config',direction:'in',type:'SAMPLING_SETTINGS',optional:true});
+      if(!model || model.attention_supported || (model.native_settings||[]).some(setting=>['override_attention','attention_sparsity','skip_steps_cache_type'].includes(setting.key))) ports.push({name:'attention_config',direction:'in',type:'ATTENTION_SETTINGS',optional:true});
+    }
+    if(!model || model.lora_supported!==false) ports.push({name:'lora_stack',direction:'in',type:'LORA_STACK',optional:true});
+    if(!model || caps.reference_images || image.reference || image.multiple_references) ports.push({name:'reference_composition',direction:'in',type:'REFERENCE_SETTINGS',optional:true});
     ports.push({name:'output',direction:'out',type:String(output || 'video').toUpperCase()});
     return ports;
   }
   function portsFor(node){
     if(['generate_image','edit_image','inpaint_image','generate_video','edit_video','inpaint_video','generate_audio'].includes(node.type)) return modelPorts(node);
+    if(node.type==='prompt_enhancer'){
+      const mode=String(node.params?.mode||'');
+      const ports=[{name:'prompt',direction:'in',type:'TEXT',optional:true},{name:'text',direction:'out',type:'TEXT'}];
+      if(!mode||mode.includes('I'))ports.splice(1,0,{name:'images',direction:'in',type:'IMAGE[]',optional:true,variadic:true});
+      return ports;
+    }
     const map = {
       input_image:[['image','out','IMAGE']], input_video:[['video','out','VIDEO']], input_audio:[['audio','out','AUDIO']], input_mask_image:[['mask','out','MASK_IMAGE']], input_mask_video:[['mask','out','MASK_VIDEO']], load_media:[['media','out','MEDIA']], text:[['text','out','TEXT']],
-      mask_editor:[['source','in','IMAGE'],['mask','out','MASK_IMAGE']], magic_mask:[['source','in','MEDIA'],['mask_image','out','MASK_IMAGE'],['mask_video','out','MASK_VIDEO']], ai_analyze:[['images','in','IMAGE[]'],['instruction','in','TEXT'],['text','out','TEXT']], last_frame:[['video','in','VIDEO'],['image','out','IMAGE']], extract_frame:[['video','in','VIDEO'],['image','out','IMAGE']], image_sequence:[['images','in','IMAGE[]'],['video','out','VIDEO']], video_probe:[['video','in','VIDEO'],['metadata','out','TEXT']], postprocess:[['media','in','MEDIA'],['references','in','IMAGE[]'],['audio','in','AUDIO'],['output','out','MEDIA']],
+      mask_editor:[['source','in','IMAGE'],['mask','out','MASK_IMAGE']], magic_mask:[['source','in','MEDIA'],['mask_image','out','MASK_IMAGE'],['mask_video','out','MASK_VIDEO']], ai_analyze:[['images','in','IMAGE[]'],['instruction','in','TEXT'],['text','out','TEXT']], resolution_config:[['settings','out','RESOLUTION_SETTINGS']], lora_stack:[['stack','out','LORA_STACK']], sampling_config:[['settings','out','SAMPLING_SETTINGS']], attention_config:[['settings','out','ATTENTION_SETTINGS']], reference_composition:[['settings','out','REFERENCE_SETTINGS']], last_frame:[['video','in','VIDEO'],['image','out','IMAGE']], extract_frame:[['video','in','VIDEO'],['image','out','IMAGE']], image_sequence:[['images','in','IMAGE[]'],['video','out','VIDEO']], video_probe:[['video','in','VIDEO'],['metadata','out','TEXT']], postprocess:[['media','in','MEDIA'],['references','in','IMAGE[]'],['audio','in','AUDIO'],['output','out','MEDIA']],
       ffmpeg_trim:[['video','in','VIDEO'],['output','out','VIDEO']], ffmpeg_concat:[['videos','in','VIDEO[]'],['output','out','VIDEO']], ffmpeg_mux_audio:[['video','in','VIDEO'],['audio','in','AUDIO'],['output','out','VIDEO']], ffmpeg_remove_audio:[['video','in','VIDEO'],['output','out','VIDEO']], ffmpeg_transcode:[['media','in','MEDIA'],['output','out','MEDIA']], ffmpeg_resize:[['video','in','VIDEO'],['output','out','VIDEO']], ffmpeg_fps:[['video','in','VIDEO'],['output','out','VIDEO']], ffmpeg_normalize:[['video','in','VIDEO'],['output','out','VIDEO']], ffmpeg_export:[['video','in','VIDEO'],['output','out','VIDEO']]
     };
     return (map[node.type] || []).map(([name,direction,type]) => ({name,direction,type,optional:true,variadic:type.endsWith('[]')}));
@@ -181,7 +259,11 @@
     const search = ($('nodeSearch').value || '').toLowerCase();
     const items = catalog.nodes.filter(item => !search || `${item.label} ${item.category}`.toLowerCase().includes(search));
     const blocks=(catalog.blocks||[]).filter(item=>!search||`${item.name} ${item.description}`.toLowerCase().includes(search));
-    $('palette').innerHTML = items.map(item => `<button data-action="add" data-node="${item.type}">${item.label}</button>`).join('') + (blocks.length?`<h4 class="palette-section">Reusable blocks</h4>${blocks.map(item=>{const pending=pendingDeleteBlockId===item.id;return `<div class="block-row${pending?' confirm-delete':''}"><button class="block-button" data-action="add-block" data-block-id="${escapeAttr(item.id)}">${escapeHtml(item.name)}</button><button class="block-delete" data-action="delete-block" data-block-id="${escapeAttr(item.id)}" title="${pending?'Confirm delete':'Delete reusable block'}">${pending?'✓':'×'}</button></div>`;}).join('')}<div class="block-hint">Click × twice to delete a block.</div>`:'');
+    const order=['Inputs','Masks','Generation','AI','Processing','Configuration','FFmpeg'];
+    const normalizeCategory=value=>({Input:'Inputs',Mask:'Masks',Conversion:'Processing',Postprocess:'Processing'}[value]||value||'Other');
+    const groups=new Map();items.forEach(item=>{const key=normalizeCategory(item.category);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);});
+    const categoryHtml=[...order,...Array.from(groups.keys()).filter(key=>!order.includes(key))].filter((key,index,array)=>array.indexOf(key)===index&&groups.has(key)).map(category=>`<h4 class="palette-section">${escapeHtml(category)}</h4>${groups.get(category).map(item=>`<button data-action="add" data-node="${item.type}">${escapeHtml(item.label)}</button>`).join('')}`).join('');
+    $('palette').innerHTML = categoryHtml + (blocks.length?`<h4 class="palette-section">Reusable blocks</h4>${blocks.map(item=>{const pending=pendingDeleteBlockId===item.id;return `<div class="block-row${pending?' confirm-delete':''}"><button class="block-button" data-action="add-block" data-block-id="${escapeAttr(item.id)}">${escapeHtml(item.name)}</button><button class="block-delete" data-action="delete-block" data-block-id="${escapeAttr(item.id)}" title="${pending?'Confirm delete':'Delete reusable block'}">${pending?'✓':'×'}</button></div>`;}).join('')}<div class="block-hint">Click × twice to delete a block.</div>`:'');
   }
   function render(){
     const canvas=$('canvas'), svg=$('edges'); canvas.innerHTML=''; svg.innerHTML=''; $('empty').style.display=graph.nodes.length?'none':'block';
@@ -198,9 +280,9 @@
       const el=document.createElement('article'); el.className=`node ${selectedNodes.includes(node.id)?'selected':''}${node.enabled===false?' disabled':''}${executionClass(node)}`; el.dataset.nodeId=node.id; el.style.left=`${node.position.x}px`; el.style.top=`${node.position.y}px`;
       const params=node.params||{}; const model=modelById(params.model_type);
       const inPorts=portsFor(node).filter(port=>port.direction==='in'), outPorts=portsFor(node).filter(port=>port.direction==='out');
-      const summary=node.type.startsWith('generate')||node.type.startsWith('edit_')||node.type.startsWith('inpaint_') ? (model?.name || params.model_type || 'Select model') : (params.process_id || params.process_type || node.type);
+      const summary=node.type.startsWith('generate')||node.type.startsWith('edit_')||node.type.startsWith('inpaint_') ? (model?.name || params.model_type || 'Select model') : node.type==='prompt_enhancer' ? (model?.name || params.model_type || 'Select model') : (params.process_id || params.process_type || node.type);
       const state=executionState.nodes?.[node.id]?.state||'';
-      el.innerHTML=`<div class="node-head"><span>${escapeHtml(node.title)}</span><small>${escapeHtml(state||node.type)}</small><button class="node-toggle" data-node-action="toggle" title="${node.enabled===false?'Enable':'Disable'} node">${node.enabled===false?'▶':'⏸'}</button></div><div class="node-body"><span class="badge">${escapeHtml(summary)}</span>${previewHtml(node)}${outputHtml(node)}${params.prompt?`<div>${escapeHtml(String(params.prompt).slice(0,80))}</div>`:''}${params.warning?`<div class="warning">${escapeHtml(params.warning)}</div>`:''}</div><div class="ports"><div class="ports-col">${inPorts.map(port=>portHtml(node,port)).join('')}</div><div class="ports-col">${outPorts.map(port=>portHtml(node,port)).join('')}</div></div>`;
+      el.innerHTML=`<div class="node-head"><span>${escapeHtml(node.title)}</span><small>${escapeHtml(state||node.type)}</small><button class="node-toggle" data-node-action="toggle" title="${node.enabled===false?'Enable':'Disable'} node">${node.enabled===false?'▶':'⏸'}</button></div><div class="node-body"><span class="badge">${escapeHtml(summary)}</span>${configSummary(node)}${previewHtml(node)}${outputHtml(node)}${params.prompt?`<div>${escapeHtml(String(params.prompt).slice(0,80))}</div>`:''}${params.warning?`<div class="warning">${escapeHtml(params.warning)}</div>`:''}</div><div class="ports"><div class="ports-col">${inPorts.map(port=>portHtml(node,port)).join('')}</div><div class="ports-col">${outPorts.map(port=>portHtml(node,port)).join('')}</div></div>`;
       canvas.appendChild(el);
       el.addEventListener('click', event=>{if(!event.target.closest('.port,.node-toggle')){selectNode(node.id,event.shiftKey);selectedEdge=null;render();}});
       el.querySelector('.node-head').addEventListener('pointerdown', event=>startNodeDrag(event,node,el));
@@ -273,6 +355,37 @@
     const rawSettings=()=>{try{p.settings=JSON.parse($('editRaw').value||'{}');delete p.warning;}catch(error){p.warning='Native settings JSON is invalid.';}};
     const title=`<label>Title</label><input id="editTitle" value="${escapeAttr(node.title)}">`;
 
+    if(node.type==='prompt_enhancer'){
+      const requestedTarget=String(p.target_media||'').toLowerCase();
+      const target=promptEnhancerTarget(modelById(p.model_type),p);
+      const targetCode=target.toUpperCase();
+      const targetModels=(catalog.models||[]).filter(item=>{
+        const outputs=(item.capabilities?.main_output||item.capabilities?.outputs||[]).map(value=>String(value).toUpperCase());
+        const itemTarget=requestedTarget||promptEnhancerTarget(item,{target_media:''});
+        return (!requestedTarget||outputs.includes(targetCode))&&outputs.includes(itemTarget.toUpperCase())&&promptEnhancerChoices(item,itemTarget).length;
+      });
+      const model=modelById(p.model_type), choices=promptEnhancerChoices(model,target);
+      const mode=p.mode||model?.prompt_enhancer?.[target]?.default||choices[0]?.value||'';
+      const promptConnected=Boolean(incomingEdge(node.id,'prompt'));
+      host.innerHTML=title+`<label>Target media</label><select id="editEnhancerTarget"><option value="" ${!requestedTarget?'selected':''}>Auto from model</option><option value="image" ${requestedTarget==='image'?'selected':''}>Image</option><option value="video" ${requestedTarget==='video'?'selected':''}>Video</option><option value="audio" ${requestedTarget==='audio'?'selected':''}>Audio</option></select><label>Wan2GP model</label><input id="editEnhancerModelSearch" placeholder="Search compatible models..." autocomplete="off"><select id="editEnhancerModel" size="${Math.min(5,Math.max(2,targetModels.length))}"><option value="">Select model</option>${targetModels.map(item=>`<option value="${escapeAttr(item.model_type)}" ${item.model_type===p.model_type?'selected':''}>${escapeHtml(modelLabel(item))}</option>`).join('')}</select><label>Enhancement mode</label><select id="editEnhancerMode"><option value="">Select mode</option>${choices.map(item=>`<option value="${escapeAttr(item.value)}" ${item.value===mode?'selected':''}>${escapeHtml(item.label)}</option>`).join('')}</select><label>Prompt</label><textarea id="editEnhancerPrompt" placeholder="Prompt to enhance..." ${promptConnected?'disabled':''}>${escapeHtml(p.prompt||'')}</textarea>${inputOverrideHint(node,'prompt','Prompt')}<div class="row"><div><label>Seed</label><input id="editEnhancerSeed" type="number" value="${escapeAttr(p.seed??-1)}"></div><div><label>Output variable</label><input id="editEnhancerOutput" value="${escapeAttr(p.output_name||'enhanced_prompt')}"></div></div><div class="hint">Wan2GP supplies the native system prompt and enhancer backend. Image inputs appear only for modes that use references. The output is TEXT and can connect directly to a generation node.</div>`;
+      const update=()=>{
+        node.title=$('editTitle').value;
+        const nextTarget=$('editEnhancerTarget').value;
+        const nextModel=$('editEnhancerModel').value;
+        p.target_media=nextTarget;p.model_type=nextModel;
+        const nextChoices=promptEnhancerChoices(modelById(nextModel),nextTarget);
+        if(!nextChoices.some(item=>item.value===$('editEnhancerMode').value))p.mode=nextChoices[0]?.value||'';else p.mode=$('editEnhancerMode').value;
+        if($('editEnhancerPrompt')&&!promptConnected)p.prompt=$('editEnhancerPrompt').value;
+        p.seed=$('editEnhancerSeed').value===''?-1:Number($('editEnhancerSeed').value);
+        p.output_name=$('editEnhancerOutput').value.trim()||'enhanced_prompt';
+        if(!String(p.mode||'').includes('I'))graph.edges=graph.edges.filter(edge=>!(edge.target?.node===node.id&&edge.target?.port==='images'));
+        render();
+      };
+      bind(['editTitle','editEnhancerTarget','editEnhancerModel','editEnhancerMode','editEnhancerPrompt','editEnhancerSeed','editEnhancerOutput'],update);
+      $('editEnhancerModelSearch')?.addEventListener('input',event=>{const query=event.target.value.toLowerCase();host.querySelectorAll('#editEnhancerModel option').forEach(option=>{option.hidden=Boolean(query&&!option.textContent.toLowerCase().includes(query));});});
+      return;
+    }
+
     if(node.type==='ai_analyze'){
       const aiModels=catalog.ai_models||[];
       const instructionConnected=Boolean(incomingEdge(node.id,'instruction'));
@@ -323,6 +436,37 @@
       bind(['editTitle','editStart','editDuration','editWidth','editHeight','editFps'],update);return;
     }
 
+    if(['resolution_config','lora_stack','sampling_config','attention_config','reference_composition'].includes(node.type)){
+      if(node.type==='resolution_config'){
+        const ratios=catalog.aspect_ratios||[{label:'Initial input',value:'source'}];
+        const tiers=['auto',...(catalog.resolution_tiers||[]).map(item=>typeof item==='string'?item:item.value).filter(Boolean)];
+        const currentTier=String(p.resolution_tier||'auto');
+        if(currentTier!=='auto'&&!tiers.includes(currentTier))p.resolution_tier='auto';
+        host.innerHTML=title+`<label>Resolution tier</label><select id="editConfigResolution">${tiers.map(value=>`<option value="${value}" ${String(p.resolution_tier||'auto')===value?'selected':''}>${value==='auto'?'Automatic':value}</option>`).join('')}</select><label>Aspect ratio</label><select id="editConfigAspect"><option value="" ${!p.aspect_ratio?'selected':''}>Keep connected source / workflow default</option>${ratios.map(item=>`<option value="${escapeAttr(item.value)}" ${item.value===p.aspect_ratio?'selected':''}>${escapeHtml(item.label)}</option>`).join('')}</select><label>Exact resolution (optional)</label><input id="editConfigExact" placeholder="Leave empty to use the tier" value="${escapeAttr(p.resolution||'')}"><div class="hint">Connect this node to generation nodes to override their resolution and aspect ratio. The selected model still decides which exact pixel sizes are valid.</div>`;
+        const update=()=>{node.title=$('editTitle').value;p.resolution_tier=$('editConfigResolution').value;if($('editConfigAspect').value)p.aspect_ratio=$('editConfigAspect').value;else delete p.aspect_ratio;p.resolution=$('editConfigExact').value.trim();if(!p.resolution)delete p.resolution;render();};
+        bind(['editTitle','editConfigResolution','editConfigAspect','editConfigExact'],update);return;
+      }
+      if(node.type==='lora_stack'){
+        const baseModels=catalog.base_models||[];
+        const legacyModel=modelById(p.model_type), selectedBase=p.base_model_type||modelBaseType(legacyModel)||baseModels[0]?.model_type||'';
+        if(!p.base_model_type&&selectedBase)p.base_model_type=selectedBase;
+        const base=baseModels.find(item=>item.model_type===p.base_model_type), state=loraState(p,p.base_model_type), loras=base?.loras||[];
+        host.innerHTML=title+`<label>Base model (LoRA family)</label><input id="editLoraModelSearch" placeholder="Search base models..."><select id="editLoraModel"><option value="">Select base model</option>${baseModels.map(item=>`<option value="${escapeAttr(item.model_type)}" ${item.model_type===p.base_model_type?'selected':''}>${escapeHtml(item.name)}</option>`).join('')}</select>${base?`<label>LoRAs</label>${loraRowsHtml(loras,state.activated_loras,parseLoraMultipliers(state.loras_multipliers))}`:'<div class="hint">Choose a base model to load only its compatible LoRA catalog. Finetunes are intentionally not listed here.</div>'}<div class="hint">The stack is reusable across finetunes of this base family. The connected generation model still has to belong to the selected base family.</div>`;
+        const update=()=>{const previous=p.base_model_type;if(previous){const current=readLoraControls(host);saveLoraState(p,previous,current.values,current.multipliers);}p.base_model_type=$('editLoraModel').value;p.model_type=p.base_model_type;const next=loraState(p,p.base_model_type);p.activated_loras=next.activated_loras;p.loras_multipliers=next.loras_multipliers;node.title=$('editTitle').value;render();};
+        const addLoraUrl=()=>{const input=$('editLoraUrl'),value=String(input?.value||'').trim();if(!value)return;if(!isRemoteLora(value)){input.setCustomValidity('Use an http:// or https:// LoRA URL.');input.reportValidity();return;}const current=readLoraControls(host);if(!current.values.includes(value))current.values.push(value),current.multipliers=current.multipliers?`${current.multipliers}|1`:'1';p.activated_loras=current.values;p.loras_multipliers=current.multipliers;saveLoraState(p,p.model_type,current.values,current.multipliers);render();};
+        bind(['editTitle','editLoraModel'],update);$('editLoraModelSearch')?.addEventListener('input',event=>{const query=event.target.value.toLowerCase();host.querySelectorAll('#editLoraModel option').forEach(option=>{option.hidden=Boolean(query&&!option.textContent.toLowerCase().includes(query));});});host.querySelectorAll('[data-lora-name],[data-lora-strength]').forEach(element=>element.addEventListener('change',event=>{if(event.target.matches('[data-lora-name]')){const strength=host.querySelector(`[data-lora-strength="${CSS.escape(event.target.dataset.loraName)}"]`);if(strength)strength.disabled=!event.target.checked;}update();}));$('editLoraSearch')?.addEventListener('input',event=>{const query=event.target.value.toLowerCase();host.querySelectorAll('[data-lora-row]').forEach(row=>{row.style.display=row.dataset.loraRow.includes(query)?'grid':'none';});});$('editAddLoraUrl')?.addEventListener('click',addLoraUrl);$('editLoraUrl')?.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addLoraUrl();}});return;
+      }
+      const configModels=(catalog.models||[]).filter(item=>node.type!=='attention_config'||item.attention_supported), configModel=modelById(p.model_type), configModelField=`<label>Model profile</label><input id="editConfigModelSearch" placeholder="Search models..."><select id="editConfigModel" size="${Math.min(5,Math.max(2,configModels.length))}"><option value="">Select model to load its choices</option>${configModels.map(item=>`<option value="${escapeAttr(item.model_type)}" ${item.model_type===p.model_type?'selected':''}>${escapeHtml(modelLabel(item))}</option>`).join('')}</select>`;
+      const fields={
+        sampling_config:configModelField+configSetting(configModel,'sample_solver','editConfigSampler',p.sample_solver)+`<div class="row"><div><label>Steps</label><input id="editConfigSteps" type="number" min="1" value="${escapeAttr(p.num_inference_steps??p.steps??'')}"></div><div><label>CFG</label><input id="editConfigCfg" type="number" step="0.01" value="${escapeAttr(p.cfg_scale??'')}"></div></div><div class="row"><div><label>Guidance</label><input id="editConfigGuidance" type="number" step="0.01" value="${escapeAttr(p.guidance_scale??'')}"></div><div><label>Flow / shift</label><input id="editConfigShift" type="number" step="0.01" value="${escapeAttr(p.flow_shift??p.shift??'')}"></div></div>`,
+        attention_config:configModelField+configSetting(configModel,'override_attention','editConfigAttention',p.override_attention)+configSetting(configModel,'skip_steps_cache_type','editConfigCacheType',p.skip_steps_cache_type)+`<div class="row"><div><label>Cache multiplier</label><input id="editConfigCacheMultiplier" type="number" step="0.01" value="${escapeAttr(p.skip_steps_multiplier??'')}"></div><div><label>Start step %</label><input id="editConfigCacheStart" type="number" step="0.01" value="${escapeAttr(p.skip_steps_start_step_perc??'')}"></div></div>`,
+        reference_composition:`<label>Reference image size (% of output)</label><input id="editConfigReferenceSize" type="number" min="1" max="100" step="1" value="${escapeAttr(p.image_refs_relative_size??'')}"><div class="hint">Used by models with image references to control how much of the output composition is occupied by the reference.</div>`
+      }[node.type];
+      host.innerHTML=title+fields+`<div class="hint">Connected values override the generation node. Empty choices keep the selected model default. Wan2GP removes settings that the selected model does not support.</div>`;
+      const update=()=>{node.title=$('editTitle').value;const numberValue=id=>$(id).value===''?'':Number($(id).value);if($('editConfigModel'))p.model_type=$('editConfigModel').value;if(node.type==='sampling_config'){p.sample_solver=$('editConfigSampler').value.trim();p.num_inference_steps=numberValue('editConfigSteps');p.cfg_scale=numberValue('editConfigCfg');p.guidance_scale=numberValue('editConfigGuidance');p.flow_shift=numberValue('editConfigShift');}else if(node.type==='attention_config'){p.override_attention=$('editConfigAttention').value.trim();p.skip_steps_cache_type=$('editConfigCacheType').value.trim();p.skip_steps_multiplier=numberValue('editConfigCacheMultiplier');p.skip_steps_start_step_perc=numberValue('editConfigCacheStart');}else{p.image_refs_relative_size=numberValue('editConfigReferenceSize');}render();};
+      bind(['editTitle','editConfigModel','editConfigSampler','editConfigSteps','editConfigCfg','editConfigGuidance','editConfigShift','editConfigAttention','editConfigCacheType','editConfigCacheMultiplier','editConfigCacheStart','editConfigReferenceSize'],update);$('editConfigModelSearch')?.addEventListener('input',event=>{const query=event.target.value.toLowerCase();host.querySelectorAll('#editConfigModel option').forEach(option=>{option.hidden=Boolean(query&&!option.textContent.toLowerCase().includes(query));});});return;
+    }
+
     if(node.type==='text'){
       host.innerHTML=title+`<label>Text</label><textarea id="editText" placeholder="Prompt or text variable...">${escapeHtml(p.text||p.value||'')}</textarea><div class="hint">Output: TEXT. Connect it to a prompt or instruction input.</div>`;
       const update=()=>{node.title=$('editTitle').value;p.text=$('editText').value;delete p.value;render();};
@@ -349,7 +493,10 @@
 
     if(['generate_image','edit_image','inpaint_image','generate_video','edit_video','inpaint_video','generate_audio'].includes(node.type)){
       const output=node.type.includes('audio')?'audio':node.type.includes('image')?'image':'video';
-      const model=modelById(p.model_type), models=modelChoicesFor(node), caps=model?.capabilities||{}, resolutions=model?.resolution_choices||[], resolutionTiers=model?.resolution_tiers||Array.from(new Set(resolutions.map(item=>item.tier))).map(value=>({label:value,value})), currentTier=p.resolution_tier||resolutions.find(item=>item.value===p.resolution)?.tier||'720p', ratios=catalog.aspect_ratios||[], workflowRatio=graph.settings?.aspect_ratio||'source', workflowRatioLabel=ratios.find(item=>item.value===workflowRatio)?.label||workflowRatio;
+      const model=modelById(p.model_type), models=modelChoicesFor(node);
+      modelDefaults(p,model);
+      const caps=model?.capabilities||{}, resolutions=model?.resolution_choices||[], resolutionTiers=model?.resolution_tiers||Array.from(new Set(resolutions.map(item=>item.tier))).map(value=>({label:value,value})), currentTier=p.resolution_tier||resolutions.find(item=>item.value===p.resolution)?.tier||model?.defaults?.resolution_tier||'720p', ratios=catalog.aspect_ratios||[], workflowRatio=graph.settings?.aspect_ratio||'source', workflowRatioLabel=ratios.find(item=>item.value===workflowRatio)?.label||workflowRatio;
+      const baseType=modelBaseType(model)||modelBaseType(models[0]), baseModels=compatibleBaseModels(models), baseFinetunes=modelsForBase(models,baseType);
       const imageInputs=caps.image_inputs||{}, videoInputs=caps.video_inputs||{};
       const sourceModes=[['auto','Automatic']];
       if(imageInputs.start)sourceModes.push(['start_image','Start image']);
@@ -369,11 +516,11 @@
       const loraField=model?.lora_supported?`<label>LoRAs</label>${loraRowsHtml(loras,selectedLoras,parseLoraMultipliers(selectedLoraState.loras_multipliers))}`:'<div class="hint">This model does not support LoRAs.</div>';
       const promptConnected=Boolean(incomingEdge(node.id,'prompt'));
       const maskHint=node.type.startsWith('inpaint_')?'Mask input is required for this inpainting node.':'When connected, MASK switches this image/video generation into Wan2GP native inpainting; without it, generation uses the full canvas.';
-      host.innerHTML=title+`<label>Model / finetune</label><select id="editModel"><option value="">Select compatible model</option>${models.map(model=>`<option value="${escapeAttr(model.model_type)}" ${model.model_type===p.model_type?'selected':''}>${escapeHtml(modelLabel(model))}</option>`).join('')}</select><label>Prompt</label><textarea id="editPrompt" ${promptConnected?'disabled':''}>${escapeHtml(p.prompt||'')}</textarea>${inputOverrideHint(node,'prompt','Prompt')}${mediaFields}${sourceModeField}${resolutionField}${loraField}<div class="row"><div><label>Seed</label><input id="editSeed" type="number" value="${escapeAttr(p.seed??-1)}"></div><div>${frameField}</div></div>${framePositionsField}<label>Steps</label><input id="editSteps" type="number" min="1" value="${escapeAttr(p.steps??p.num_inference_steps??20)}">${nativeSettingsHtml(model,p)}<details><summary>Advanced native JSON</summary><textarea id="editRaw">${escapeHtml(JSON.stringify(p.settings||{},null,2))}</textarea></details><div class="hint">${maskHint} The model list, ports, ranges and native controls are filtered from Wan2GP metadata.</div>`;
+      host.innerHTML=title+`<label>Base model</label><select id="editModelBase"><option value="">Select base model</option>${baseModels.map(item=>`<option value="${escapeAttr(item.model_type)}" ${item.model_type===baseType?'selected':''}>${escapeHtml(item.name)}</option>`).join('')}</select><label>Finetune / variant</label><input id="editModelSearch" placeholder="Search models..." autocomplete="off"><select id="editModel" size="${Math.min(5,Math.max(2,baseFinetunes.length))}"><option value="">Select compatible model</option>${baseFinetunes.map(item=>`<option value="${escapeAttr(item.model_type)}" ${item.model_type===p.model_type?'selected':''}>${escapeHtml(modelLabel(item))}</option>`).join('')}</select><label>Prompt</label><textarea id="editPrompt" ${promptConnected?'disabled':''}>${escapeHtml(p.prompt||'')}</textarea>${inputOverrideHint(node,'prompt','Prompt')}${mediaFields}${sourceModeField}${resolutionField}${loraField}<div class="row"><div><label>Seed</label><input id="editSeed" type="number" value="${escapeAttr(p.seed??-1)}"></div><div>${frameField}</div></div>${framePositionsField}<label>Steps</label><input id="editSteps" type="number" min="1" value="${escapeAttr(p.steps??p.num_inference_steps??model?.defaults?.num_inference_steps??model?.defaults?.steps??20)}">${nativeSettingsHtml(model,p)}<details><summary>Advanced native JSON</summary><textarea id="editRaw">${escapeHtml(JSON.stringify(p.settings||{},null,2))}</textarea></details><div class="hint">${maskHint} Base models and finetunes are filtered by Wan2GP capabilities. Empty native controls keep the selected model default.</div>`;
       const nativeControls=(model?.native_settings||[]).map(setting=>nativeSettingId(setting.key));
-      const update=()=>{node.title=$('editTitle').value;const previousModel=p.model_type;const previousLoras=readLoraControls(host);if(previousModel)saveLoraState(p,previousModel,previousLoras.values,previousLoras.multipliers);p.model_type=$('editModel').value;const modelChanged=previousModel!==p.model_type;if(modelChanged){p.settings_by_model=p.settings_by_model||{};if(previousModel)p.settings_by_model[previousModel]=clone(p.settings||{});p.settings=clone(p.settings_by_model[p.model_type]||{});const nextLoras=loraState(p,p.model_type);p.activated_loras=nextLoras.activated_loras;p.loras_multipliers=nextLoras.loras_multipliers;delete p.resolution;delete p.resolution_tier;p.source_mode='auto';}if($('editPrompt')&&!promptConnected)p.prompt=$('editPrompt').value;if($('editNegative'))p.negative_prompt=$('editNegative').value;p.seed=Number($('editSeed').value);if($('editFrames'))p.video_length=Number($('editFrames').value);if($('editFramePositions'))p.frame_positions=$('editFramePositions').value.trim();if($('editSteps')){p.steps=Number($('editSteps').value);p.num_inference_steps=p.steps;}if($('editSourceMode'))p.source_mode=$('editSourceMode').value;if($('editResolution')){p.resolution_tier=$('editResolution').value||'720p';delete p.resolution;}if($('editAspectRatio')){const ratio=$('editAspectRatio').value;if(ratio)p.aspect_ratio=ratio;else delete p.aspect_ratio;}if(!modelChanged)readNativeSettings(modelById(p.model_type),p);if(!modelChanged){const currentLoras=readLoraControls(host);p.activated_loras=currentLoras.values;p.loras_multipliers=currentLoras.multipliers;saveLoraState(p,p.model_type,currentLoras.values,currentLoras.multipliers);}render();};
+      const update=()=>{node.title=$('editTitle').value;const previousModel=p.model_type;const previousLoras=readLoraControls(host);if(previousModel)saveLoraState(p,previousModel,previousLoras.values,previousLoras.multipliers);p.model_type=$('editModel').value;const modelChanged=previousModel!==p.model_type;if(modelChanged){p.settings_by_model=p.settings_by_model||{};if(previousModel)p.settings_by_model[previousModel]=clone(p.settings||{});p.settings=clone(p.settings_by_model[p.model_type]||{});const nextLoras=loraState(p,p.model_type);p.activated_loras=nextLoras.activated_loras;p.loras_multipliers=nextLoras.loras_multipliers;delete p.resolution;delete p.resolution_tier;delete p.steps;delete p.num_inference_steps;p.source_mode='auto';modelDefaults(p,modelById(p.model_type));}if($('editPrompt')&&!promptConnected)p.prompt=$('editPrompt').value;if($('editNegative'))p.negative_prompt=$('editNegative').value;p.seed=$('editSeed').value===''?-1:Number($('editSeed').value);if($('editFrames'))p.video_length=$('editFrames').value===''?'':Number($('editFrames').value);if($('editFramePositions'))p.frame_positions=$('editFramePositions').value.trim();if($('editSteps')){if($('editSteps').value===''){p.steps='';p.num_inference_steps='';}else{p.steps=Number($('editSteps').value);p.num_inference_steps=p.steps;}}if($('editSourceMode'))p.source_mode=$('editSourceMode').value;if($('editResolution')){p.resolution_tier=$('editResolution').value||'720p';delete p.resolution;}if($('editAspectRatio')){const ratio=$('editAspectRatio').value;if(ratio)p.aspect_ratio=ratio;else delete p.aspect_ratio;}if(!modelChanged)readNativeSettings(modelById(p.model_type),p);if(!modelChanged){const currentLoras=readLoraControls(host);p.activated_loras=currentLoras.values;p.loras_multipliers=currentLoras.multipliers;saveLoraState(p,p.model_type,currentLoras.values,currentLoras.multipliers);}render();};
       const addLoraUrl=()=>{const input=$('editLoraUrl'),value=String(input?.value||'').trim();if(!value)return;if(!isRemoteLora(value)){input.setCustomValidity('Use an http:// or https:// LoRA URL.');input.reportValidity();return;}const current=readLoraControls(host);if(!current.values.includes(value))current.values.push(value),current.multipliers=current.multipliers?`${current.multipliers}|1`:'1';p.activated_loras=current.values;p.loras_multipliers=current.multipliers;saveLoraState(p,p.model_type,current.values,current.multipliers);render();};
-      bind(['editTitle','editModel','editPrompt','editNegative','editSeed','editFrames','editFramePositions','editSteps','editSourceMode','editResolution','editAspectRatio',...nativeControls],update);$('editRaw')?.addEventListener('change',()=>{rawSettings();render();});host.querySelectorAll('[data-lora-name],[data-lora-strength]').forEach(element=>element.addEventListener('change',event=>{if(event.target.matches('[data-lora-name]')){const strength=host.querySelector(`[data-lora-strength="${CSS.escape(event.target.dataset.loraName)}"]`);if(strength)strength.disabled=!event.target.checked;}update();}));$('editLoraSearch')?.addEventListener('input',event=>{const query=event.target.value.toLowerCase();host.querySelectorAll('[data-lora-row]').forEach(row=>{row.style.display=row.dataset.loraRow.includes(query)?'grid':'none';});});$('editAddLoraUrl')?.addEventListener('click',addLoraUrl);$('editLoraUrl')?.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addLoraUrl();}});return;
+      bind(['editTitle','editModel','editPrompt','editNegative','editSeed','editFrames','editFramePositions','editSteps','editSourceMode','editResolution','editAspectRatio',...nativeControls],update);$('editModelBase')?.addEventListener('change',()=>{const next=modelsForBase(models,$('editModelBase').value)[0];if(next){$('editModel').value=next.model_type;update();}});$('editModelSearch')?.addEventListener('input',event=>{const query=event.target.value.toLowerCase();host.querySelectorAll('#editModel option').forEach(option=>{option.hidden=Boolean(query&&!option.textContent.toLowerCase().includes(query));});});$('editRaw')?.addEventListener('change',()=>{rawSettings();render();});host.querySelectorAll('[data-lora-name],[data-lora-strength]').forEach(element=>element.addEventListener('change',event=>{if(event.target.matches('[data-lora-name]')){const strength=host.querySelector(`[data-lora-strength="${CSS.escape(event.target.dataset.loraName)}"]`);if(strength)strength.disabled=!event.target.checked;}update();}));$('editLoraSearch')?.addEventListener('input',event=>{const query=event.target.value.toLowerCase();host.querySelectorAll('[data-lora-row]').forEach(row=>{row.style.display=row.dataset.loraRow.includes(query)?'grid':'none';});});$('editAddLoraUrl')?.addEventListener('click',addLoraUrl);$('editLoraUrl')?.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addLoraUrl();}});return;
     }
 
     host.innerHTML=title+`<details><summary>Advanced native settings</summary><textarea id="editRaw">${escapeHtml(JSON.stringify(p.settings||{},null,2))}</textarea></details><div class="hint">${escapeHtml(node.type)} has no model selector. Its ports define the valid connections.</div>`;
@@ -381,7 +528,7 @@
     bind(['editTitle','editRaw'],update);
   }
 
-  function addNode(type){const index=graph.nodes.length;const node={id:uid(),type,title:(catalog.nodes.find(item=>item.type===type)||{}).label||type,position:{x:120+(index%4)*280,y:80+Math.floor(index/4)*190},params:{},ui:{},enabled:true};if(type.startsWith('generate')||type.startsWith('edit_')||type.startsWith('inpaint_'))node.params.settings={};if(type==='text')node.params.text='';if(type==='ai_analyze'){node.params.instruction='';node.params.model=3;node.params.max_tokens=192;node.params.output_name='analysis';}graph.nodes.push(node);selectNode(node.id);selectedEdge=null;render();}
+  function addNode(type){const index=graph.nodes.length;const node={id:uid(),type,title:(catalog.nodes.find(item=>item.type===type)||{}).label||type,position:{x:120+(index%4)*280,y:80+Math.floor(index/4)*190},params:{},ui:{},enabled:true};if(type.startsWith('generate')||type.startsWith('edit_')||type.startsWith('inpaint_'))node.params.settings={};if(type==='text')node.params.text='';if(type==='ai_analyze'){node.params.instruction='';node.params.model=3;node.params.max_tokens=192;node.params.output_name='analysis';}if(type==='prompt_enhancer'){node.params.target_media='';node.params.model_type='';node.params.mode='';node.params.seed=-1;node.params.output_name='enhanced_prompt';}if(type==='resolution_config')node.params.resolution_tier='auto';if(type==='lora_stack')node.params.activated_loras=[];graph.nodes.push(node);selectNode(node.id);selectedEdge=null;render();}
   function createGroup(){const ids=[...selectedNodes];if(!ids.length&&selected)ids.push(selected);if(!ids.length)return;const colors=['#395b78','#6b4f8a','#39785f','#89633d','#82506a'];const group={id:uid(),title:`Group ${graph.groups.length+1}`,color:colors[graph.groups.length%colors.length],node_ids:ids,enabled:true};graph.groups.push(group);selectGroup(group.id);render();}
   function insertBlock(blockId){const block=(catalog.blocks||[]).find(item=>item.id===blockId);if(!block)return;const nodes=block.nodes||[], idMap={};const minX=Math.min(...nodes.map(node=>Number(node.position?.x||0)),0),minY=Math.min(...nodes.map(node=>Number(node.position?.y||0)),0),offsetX=180-minX+(graph.nodes.length%3)*30,offsetY=100-minY+(graph.nodes.length%3)*30;const clones=nodes.map(raw=>{const node=clone(raw);idMap[node.id]=uid();node.id=idMap[node.id];node.position={x:Number(node.position?.x||0)+offsetX,y:Number(node.position?.y||0)+offsetY};node.enabled=node.enabled!==false;return node;});graph.nodes.push(...clones);graph.edges.push(...(block.edges||[]).map(raw=>{const edge=clone(raw);edge.id=uid();edge.source.node=idMap[edge.source.node]||edge.source.node;edge.target.node=idMap[edge.target.node]||edge.target.node;return edge;}));const sourceGroup=(block.groups||[])[0];if(sourceGroup){const group=clone(sourceGroup);group.id=uid();group.node_ids=(group.node_ids||[]).map(id=>idMap[id]).filter(Boolean);graph.groups.push(group);selectGroup(group.id);}else{selectedNodes=clones.map(node=>node.id);selected=selectedNodes[0]||null;}selectedEdge=null;render();}
   function saveSelectedBlock(){const group=groupById(selectedGroup);if(!group)return;graph.ui=graph.ui||{};graph.ui.selected_group_id=group.id;emit('save_block');}

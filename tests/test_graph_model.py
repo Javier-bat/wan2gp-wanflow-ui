@@ -89,6 +89,24 @@ class GraphModelTests(unittest.TestCase):
         self.assertEqual(ports["references"]["type"], "IMAGE[]")
         self.assertEqual(ports["audio"]["type"], GRAPH.AUDIO)
 
+    def test_prompt_enhancer_ports_follow_reference_mode(self):
+        node = GRAPH.new_node("prompt_enhancer", params={"mode": "T"})
+        self.assertIn("prompt", GRAPH.node_ports(node))
+        self.assertNotIn("images", GRAPH.node_ports(node))
+        node["params"]["mode"] = "TI"
+        self.assertEqual(GRAPH.node_ports(node)["images"]["type"], "IMAGE[]")
+        self.assertEqual(GRAPH.node_ports(node)["text"]["type"], GRAPH.TEXT)
+
+    def test_configuration_nodes_have_typed_outputs_and_generation_overrides(self):
+        generation = GRAPH.node_ports(GRAPH.new_node("generate_video", params={"model_type": "video"}), {
+            "video": {"metadata": {"outputs": ["video"], "main_output": ["video"], "media_inputs": {}}}
+        })
+        self.assertEqual(generation["resolution_config"]["type"], GRAPH.RESOLUTION_SETTINGS)
+        self.assertEqual(generation["lora_stack"]["type"], GRAPH.LORA_STACK)
+        self.assertEqual(generation["sampling_config"]["type"], GRAPH.SAMPLING_SETTINGS)
+        self.assertEqual(GRAPH.node_ports(GRAPH.new_node("lora_stack"))["stack"]["type"], GRAPH.LORA_STACK)
+        self.assertEqual(GRAPH.node_ports(GRAPH.new_node("attention_config"))["settings"]["type"], GRAPH.ATTENTION_SETTINGS)
+
     def test_magic_mask_accepts_media_and_exposes_typed_mask_outputs(self):
         ports = GRAPH.node_ports(GRAPH.new_node("magic_mask"))
         self.assertEqual(ports["source"]["type"], GRAPH.ANY_MEDIA)

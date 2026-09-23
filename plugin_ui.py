@@ -46,11 +46,55 @@ def _model_defs(plugin) -> dict[str, dict[str, Any]]:
     except Exception:
         records = []
     result = {}
+    resolve_base = getattr(plugin, "get_base_model_type", None)
+    resolve_parent = getattr(plugin, "get_parent_model_type", None)
+    resolve_family = getattr(plugin, "get_model_family", None)
+    get_default_settings = getattr(plugin, "get_default_settings", None)
+
+    def resolve(function, key: str, **kwargs) -> str:
+        if not callable(function):
+            return ""
+        try:
+            value = function(key, **kwargs)
+        except TypeError:
+            try:
+                value = function(key)
+            except Exception:
+                value = ""
+        except Exception:
+            value = ""
+        return str(value or "").strip()
+
     for record in records:
         if isinstance(record, dict):
             key = str(record.get("model_type") or record.get("architecture") or "").strip()
             if key:
-                result[key] = record
+                enriched = copy.deepcopy(record)
+                base = resolve(resolve_base, key)
+                parent = resolve(resolve_parent, key)
+                family = resolve(resolve_family, key, for_ui=True)
+                raw_base = str(record.get("base_model_type") or record.get("architecture") or key).strip()
+                # Wan2GP's family resolver is the authoritative grouping used by
+                # its LoRA picker. Keep the raw base too for runtime validation.
+                enriched["base_model_type"] = base or raw_base
+                enriched["parent_model_type"] = parent or str(record.get("parent_model_type") or "").strip()
+                enriched["lora_family"] = family or str(record.get("lora_family") or record.get("family") or parent or base or raw_base)
+                enriched["lora_family_name"] = str(
+                    record.get("lora_family_name")
+                    or record.get("family_name")
+                    or record.get("model_family_name")
+                    or enriched["lora_family"]
+                ).strip()
+                if callable(get_default_settings):
+                    try:
+                        defaults = get_default_settings(key)
+                    except Exception:
+                        defaults = None
+                    if isinstance(defaults, dict):
+                        merged_defaults = copy.deepcopy(enriched.get("default_settings") or {})
+                        merged_defaults.update(copy.deepcopy(defaults))
+                        enriched["default_settings"] = merged_defaults
+                result[key] = enriched
     return result
 
 
@@ -182,7 +226,12 @@ def _iframe(plugin, graph: dict[str, Any], status: str = "Ready") -> str:
     css = (ASSET_ROOT / "editor.css").read_text(encoding="utf-8")
     js = (ASSET_ROOT / "editor.js").read_text(encoding="utf-8")
     model_defs = _model_defs(plugin)
-    catalog = build_catalog(model_defs, _processes(), _loras(plugin, model_defs))
+    catalog = build_catalog(
+        model_defs,
+        _processes(),
+        _loras(plugin, model_defs),
+        getattr(plugin, "get_prompt_enhancer_choices", None),
+    )
     catalog["blocks"] = BlockStore(BLOCK_ROOT).catalog()
     graph_payload = base64.b64encode(json.dumps(graph_for_json(graph), ensure_ascii=False).encode("utf-8")).decode("ascii")
     catalog_payload = base64.b64encode(json.dumps(catalog, ensure_ascii=False).encode("utf-8")).decode("ascii")

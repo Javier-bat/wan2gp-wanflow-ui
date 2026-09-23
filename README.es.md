@@ -32,6 +32,7 @@ Es un plugin de Wan2GP. No es un motor de inferencia independiente ni reemplaza 
 - Ejecución topológica con ramas y convergencias.
 - Generación, edición, inpainting, referencias, máscaras, audio, LoRAs, resolución, aspect ratio y controles nativos por modelo.
 - Análisis IA con salidas de texto y variables del workflow.
+- Nodo Prompt Enhancer nativo que usa los modos específicos del modelo en Wan2GP y muestra referencias de imagen solo cuando el modo seleccionado las admite.
 - Postprocesadores descubiertos desde el catálogo instalado de Wan2GP.
 - Operaciones FFmpeg tipadas usando los binarios administrados por Wan2GP.
 - Previews de imágenes, videos, audio y máscaras.

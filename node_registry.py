@@ -15,15 +15,15 @@ from .graph_model import GENERATION_NODE_TYPES, node_ports, model_capabilities
 
 
 STATIC_NODES = [
-    ("input_image", "Input Image", "Input", "Provide an image file."),
-    ("input_video", "Input Video", "Input", "Provide a video file."),
-    ("input_audio", "Input Audio", "Input", "Provide an audio file."),
-    ("input_mask_image", "Input Mask Image", "Input", "Provide a static mask image file."),
-    ("input_mask_video", "Input Mask Video", "Input", "Provide a video mask file."),
-    ("load_media", "Load Media", "Input", "Bind one runtime media upload."),
-    ("text", "Text", "Input", "Provide text to a prompt or AI node."),
-    ("mask_editor", "Mask Editor", "Input", "Create an image mask with the existing editor."),
-    ("magic_mask", "Magic Mask", "Mask", "Generate an image or video mask from object keywords using Wan2GP Magic Mask."),
+    ("input_image", "Input Image", "Inputs", "Provide an image file."),
+    ("input_video", "Input Video", "Inputs", "Provide a video file."),
+    ("input_audio", "Input Audio", "Inputs", "Provide an audio file."),
+    ("load_media", "Load Media", "Inputs", "Bind one runtime media upload."),
+    ("text", "Text", "Inputs", "Provide text to a prompt or AI node."),
+    ("input_mask_image", "Input Mask Image", "Masks", "Provide a static mask image file."),
+    ("input_mask_video", "Input Mask Video", "Masks", "Provide a video mask file."),
+    ("mask_editor", "Mask Editor", "Masks", "Create an image mask with the existing editor."),
+    ("magic_mask", "Magic Mask", "Masks", "Generate an image or video mask from object keywords using Wan2GP Magic Mask."),
     ("generate_image", "Generate Image", "Generation", "Text or image-conditioned image generation."),
     ("edit_image", "Edit Image", "Generation", "Image editing node."),
     ("inpaint_image", "Inpaint Image", "Generation", "Image generation with a mask."),
@@ -32,11 +32,17 @@ STATIC_NODES = [
     ("inpaint_video", "Inpaint Video", "Generation", "Video generation with a mask."),
     ("generate_audio", "Generate Audio", "Generation", "Audio generation node."),
     ("ai_analyze", "AI Analyze", "AI", "Analyze connected images and emit text."),
-    ("last_frame", "Last Frame", "Conversion", "Extract the last image from a video."),
-    ("extract_frame", "Extract Frame", "Conversion", "Extract a numbered image from a video."),
-    ("image_sequence", "Image Sequence", "Conversion", "Encode images as a video."),
-    ("video_probe", "Video Probe", "Conversion", "Read media metadata."),
-    ("postprocess", "Postprocess", "Postprocess", "Use a dynamically discovered Wan2GP processor."),
+    ("prompt_enhancer", "Prompt Enhancer", "AI", "Rewrite a prompt with Wan2GP's model-specific prompt enhancer."),
+    ("resolution_config", "Resolution & Aspect", "Configuration", "Override resolution tier and aspect ratio for connected generation nodes."),
+    ("lora_stack", "LoRA Stack", "Configuration", "Select multiple model-scoped LoRAs with an individual strength for each one."),
+    ("sampling_config", "Sampling / Guidance", "Configuration", "Override common sampling and guidance settings on connected generation nodes."),
+    ("attention_config", "Attention & Cache", "Configuration", "Override model-native attention and skip-step cache settings."),
+    ("reference_composition", "Reference Composition", "Configuration", "Override the relative size of image references inside the output video."),
+    ("last_frame", "Last Frame", "Processing", "Extract the last image from a video."),
+    ("extract_frame", "Extract Frame", "Processing", "Extract a numbered image from a video."),
+    ("image_sequence", "Image Sequence", "Processing", "Encode images as a video."),
+    ("video_probe", "Video Probe", "Processing", "Read media metadata."),
+    ("postprocess", "Postprocess", "Processing", "Use a dynamically discovered Wan2GP processor."),
     ("ffmpeg_trim", "FFmpeg Trim", "FFmpeg", "Trim a video safely."),
     ("ffmpeg_concat", "FFmpeg Concat", "FFmpeg", "Concatenate videos with normalized streams."),
     ("ffmpeg_mux_audio", "FFmpeg Mux Audio", "FFmpeg", "Replace or add a soundtrack."),
@@ -151,6 +157,74 @@ def _native_settings(model_def: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _model_defaults(model_def: dict[str, Any]) -> dict[str, Any]:
+    """Expose only generation defaults that are safe to persist in the editor."""
+    keys = {
+        "num_inference_steps", "steps", "video_length", "cfg_scale", "guidance_scale",
+        "sample_solver", "flow_shift", "shift", "denoising_strength", "sliding_window_size",
+        "sliding_window_overlap", "skip_steps_cache_type", "skip_steps_multiplier",
+        "skip_steps_start_step_perc", "override_attention", "attention_sparsity",
+        "image_refs_relative_size",
+    }
+    source = model_def.get("default_settings") or model_def.get("defaults") or {}
+    result = copy.deepcopy(source) if isinstance(source, dict) else {}
+    numeric_keys = {
+        "num_inference_steps", "steps", "video_length", "cfg_scale", "guidance_scale",
+        "flow_shift", "shift", "denoising_strength", "sliding_window_size", "sliding_window_overlap",
+        "skip_steps_multiplier", "skip_steps_start_step_perc", "attention_sparsity", "image_refs_relative_size",
+    }
+    string_keys = {"sample_solver", "skip_steps_cache_type", "override_attention"}
+
+    def valid_default(key: str, value: Any) -> bool:
+        if key in numeric_keys:
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if key in string_keys:
+            return isinstance(value, (str, int, float)) and not isinstance(value, bool)
+        return True
+
+    result = {key: value for key, value in result.items() if valid_default(key, value)}
+    for key in keys:
+        if key in model_def and model_def[key] not in (None, "") and valid_default(key, model_def[key]):
+            result[key] = copy.deepcopy(model_def[key])
+    return result
+
+
+def _prompt_enhancer_catalog(model_def: dict[str, Any], resolver=None) -> dict[str, Any]:
+    """Expose Wan2GP's native enhancer choices without copying model prompts."""
+    result: dict[str, Any] = {}
+    for target, audio_only, image_mode in (("image", False, 1), ("video", False, 0), ("audio", True, 0)):
+        choices = []
+        default = ""
+        if callable(resolver):
+            try:
+                native_choices, default, _definition = resolver(model_def, audio_only, image_mode, False)
+                choices = _choices(native_choices)
+            except Exception:
+                choices = []
+        if not choices:
+            definition = model_def.get("prompt_enhancer_def")
+            if isinstance(definition, dict):
+                labels = definition.get("labels") or {}
+                mode_letter = "P" if image_mode > 0 else "V"
+                for key, label in labels.items():
+                    key = str(key or "")
+                    if "V" in key or "P" in key:
+                        filters = {letter for letter in key if letter in "VP"}
+                        if filters and mode_letter not in filters:
+                            continue
+                    value = key.replace("V", "").replace("P", "")
+                    if value:
+                        choices.append({"label": str(label or value), "value": value})
+                default = str(definition.get("default") or "")
+            else:
+                allowed = model_def.get("prompt_enhancer_choices_allowed")
+                if not isinstance(allowed, (list, tuple)):
+                    allowed = ["T"] if audio_only else ["T", "TI"]
+                choices = _choices(allowed)
+        result[target] = {"choices": choices, "default": default}
+    return result
+
+
 def _port_list(node: dict[str, Any], model_defs: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     values = []
     for name, port in node_ports(node, model_defs).items():
@@ -162,6 +236,7 @@ def build_catalog(
     model_defs: dict[str, dict[str, Any]] | None = None,
     processes: list[dict[str, Any]] | None = None,
     loras: dict[str, list[str]] | None = None,
+    prompt_enhancer_resolver=None,
 ) -> dict[str, Any]:
     model_defs = model_defs or {}
     loras = loras or {}
@@ -189,6 +264,9 @@ def build_catalog(
     models = []
     for model_type, model_def in sorted(model_defs.items(), key=lambda item: str(item[0]).casefold()):
         caps = model_capabilities(model_def)
+        native_settings = _native_settings(model_def)
+        base_model_type = str(model_def.get("base_model_type") or model_def.get("architecture") or model_type)
+        base_def = model_defs.get(base_model_type) or {}
         try:
             resolutions = resolution_api.resolve_resolution_choices(None, model_def, False, model_def.get("vae_block_size", 16))[0]
         except Exception:
@@ -201,6 +279,10 @@ def build_catalog(
         models.append({
             "model_type": str(model_type),
             "name": str(model_def.get("name") or model_type),
+            "base_model_type": base_model_type,
+            "base_name": str(base_def.get("name") or base_model_type),
+            "lora_family": str(model_def.get("lora_family") or base_model_type),
+            "lora_family_name": str(model_def.get("lora_family_name") or model_def.get("family_name") or base_def.get("name") or base_model_type),
             "metadata": copy.deepcopy(model_def.get("metadata") or {}),
             "capabilities": caps,
             "svi2pro": bool(model_def.get("svi2pro")),
@@ -209,6 +291,28 @@ def build_catalog(
             "loras": list(loras.get(str(model_type), [])),
             "resolution_choices": [{"label": str(label), "value": str(value), "tier": resolution_api.categorize_resolution(str(value))} for label, value in resolutions],
             "resolution_tiers": [{"label": value, "value": value} for value in tiers],
-            "native_settings": _native_settings(model_def),
+            "native_settings": native_settings,
+            "defaults": _model_defaults(model_def),
+            "prompt_enhancer": _prompt_enhancer_catalog(model_def, prompt_enhancer_resolver),
+            "attention_supported": bool(model_def.get("custom_attention_modes")) or any(model_def.get(flag) for flag in ("tea_cache", "mag_cache", "spectrum_cache", "first_block_cache")),
         })
-    return {"nodes": catalog, "models": models, "processes": dynamic_processes, "ai_models": copy.deepcopy(AI_MODELS), "aspect_ratios": copy.deepcopy(ASPECT_RATIOS)}
+    base_models = {}
+    for model in models:
+        base = str(model.get("lora_family") or model.get("base_model_type") or model["model_type"])
+        entry = base_models.setdefault(base, {"model_type": base, "name": model.get("lora_family_name") or model.get("base_name") or base, "loras": []})
+        for lora in model.get("loras") or []:
+            if lora not in entry["loras"]:
+                entry["loras"].append(lora)
+    resolution_tiers = [
+        {"label": str(tier), "value": str(tier)}
+        for tier in resolution_api.GROUP_THRESHOLDS
+    ]
+    return {
+        "nodes": catalog,
+        "models": models,
+        "base_models": sorted(base_models.values(), key=lambda item: str(item.get("name") or "").casefold()),
+        "processes": dynamic_processes,
+        "ai_models": copy.deepcopy(AI_MODELS),
+        "aspect_ratios": copy.deepcopy(ASPECT_RATIOS),
+        "resolution_tiers": resolution_tiers,
+    }

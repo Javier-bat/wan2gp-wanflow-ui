@@ -19,6 +19,11 @@ MASK_VIDEO = "MASK_VIDEO"
 TEXT = "TEXT"
 FRAME_LIST = "FRAME_LIST"
 ANY_MEDIA = "MEDIA"
+RESOLUTION_SETTINGS = "RESOLUTION_SETTINGS"
+LORA_STACK = "LORA_STACK"
+SAMPLING_SETTINGS = "SAMPLING_SETTINGS"
+ATTENTION_SETTINGS = "ATTENTION_SETTINGS"
+REFERENCE_SETTINGS = "REFERENCE_SETTINGS"
 
 
 INPUT_NODE_TYPES = {"input_image", "input_video", "input_audio", "input_mask_image", "input_mask_video", "load_media"}
@@ -47,6 +52,13 @@ PROCESS_NODE_TYPES = {
     "ffmpeg_fps",
     "ffmpeg_normalize",
     "ffmpeg_export",
+}
+CONFIG_NODE_TYPES = {
+    "resolution_config",
+    "lora_stack",
+    "sampling_config",
+    "attention_config",
+    "reference_composition",
 }
 
 
@@ -81,7 +93,13 @@ def new_node(node_type: str, title: str | None = None, *, x: float = 80, y: floa
         "edit_video": "Edit Video",
         "inpaint_video": "Inpaint Video",
         "generate_audio": "Generate Audio",
+        "resolution_config": "Resolution & Aspect",
+        "lora_stack": "LoRA Stack",
+        "sampling_config": "Sampling / Guidance",
+        "attention_config": "Attention & Cache",
+        "reference_composition": "Reference Composition",
         "ai_analyze": "AI Analyze",
+        "prompt_enhancer": "Prompt Enhancer",
         "mask_editor": "Mask Editor",
         "magic_mask": "Magic Mask",
         "last_frame": "Last Frame",
@@ -145,6 +163,23 @@ def model_capabilities(model_def: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _visible_setting_keys(model_def: dict[str, Any] | None) -> set[str]:
+    if not model_def:
+        return set()
+    try:
+        from shared import extra_settings
+        keys = set(extra_settings.iter_defs(model_def, only_visible=True, guidance_phases=1) or {})
+    except Exception:
+        keys = set()
+    if model_def.get("sample_solvers") is not None:
+        keys.add("sample_solver")
+    if any(model_def.get(flag) for flag in ("tea_cache", "mag_cache", "spectrum_cache", "first_block_cache")):
+        keys.update({"skip_steps_cache_type", "skip_steps_multiplier", "skip_steps_start_step_perc"})
+    if model_def.get("custom_attention_modes"):
+        keys.add("override_attention")
+    return keys
+
+
 def _generation_ports(node: dict[str, Any], model_def: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     caps = model_capabilities(model_def)
     node_type = _text(node.get("type"))
@@ -178,6 +213,18 @@ def _generation_ports(node: dict[str, Any], model_def: dict[str, Any] | None) ->
         result["end_frame"] = {"direction": "in", "type": IMAGE, "optional": True}
     if image_inputs.get("injected_frames"):
         result["frames"] = {"direction": "in", "type": f"{IMAGE}[]", "optional": True, "variadic": True}
+    if node_type != "generate_audio":
+        result.update({
+            "resolution_config": {"direction": "in", "type": RESOLUTION_SETTINGS, "optional": True},
+            "sampling_config": {"direction": "in", "type": SAMPLING_SETTINGS, "optional": True},
+        })
+        if model_def is None or _visible_setting_keys(model_def).intersection({"override_attention", "attention_sparsity", "skip_steps_cache_type"}):
+            result["attention_config"] = {"direction": "in", "type": ATTENTION_SETTINGS, "optional": True}
+    supports_lora = model_def is None or (not bool(model_def.get("no_lora", False)) and bool(caps.get("lora", True)))
+    if supports_lora:
+        result["lora_stack"] = {"direction": "in", "type": LORA_STACK, "optional": True}
+    if model_def is None or caps.get("reference_images") or image_inputs.get("reference") or image_inputs.get("multiple_references"):
+        result["reference_composition"] = {"direction": "in", "type": REFERENCE_SETTINGS, "optional": True}
     result.update({"output": {"direction": "out", "type": output_type}})
     return result
 
@@ -203,6 +250,16 @@ def node_ports(node: dict[str, Any], model_defs: dict[str, dict[str, Any]] | Non
     model_def = (model_defs or {}).get(model_type) if model_type else None
     if node_type in GENERATION_NODE_TYPES:
         return _generation_ports(node, model_def)
+    if node_type == "resolution_config":
+        return {"settings": {"direction": "out", "type": RESOLUTION_SETTINGS}}
+    if node_type == "lora_stack":
+        return {"stack": {"direction": "out", "type": LORA_STACK}}
+    if node_type == "sampling_config":
+        return {"settings": {"direction": "out", "type": SAMPLING_SETTINGS}}
+    if node_type == "attention_config":
+        return {"settings": {"direction": "out", "type": ATTENTION_SETTINGS}}
+    if node_type == "reference_composition":
+        return {"settings": {"direction": "out", "type": REFERENCE_SETTINGS}}
     if node_type == "text":
         return {"text": {"direction": "out", "type": TEXT}}
     if node_type == "mask_editor":
@@ -227,6 +284,18 @@ def node_ports(node: dict[str, Any], model_defs: dict[str, dict[str, Any]] | Non
         return {"media": {"direction": "out", "type": ANY_MEDIA}}
     if node_type == "ai_analyze":
         return {"images": {"direction": "in", "type": f"{IMAGE}[]", "optional": True, "variadic": True}, "instruction": {"direction": "in", "type": TEXT, "optional": True}, "text": {"direction": "out", "type": TEXT}}
+    if node_type == "prompt_enhancer":
+        mode = _text(params.get("mode"))
+        result = {
+            "prompt": {"direction": "in", "type": TEXT, "optional": True},
+            "text": {"direction": "out", "type": TEXT},
+        }
+        # Wan2GP's native modes containing I consume a reference image. Keep
+        # the port visible before a mode is selected so a new node is easy to
+        # wire, then make it disappear for text-only modes.
+        if not mode or "I" in mode:
+            result["images"] = {"direction": "in", "type": f"{IMAGE}[]", "optional": True, "variadic": True}
+        return result
     if node_type in {"last_frame", "extract_frame"}:
         return {"video": {"direction": "in", "type": VIDEO}, "image": {"direction": "out", "type": IMAGE}}
     if node_type == "image_sequence":

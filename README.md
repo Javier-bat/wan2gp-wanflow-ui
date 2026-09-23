@@ -32,6 +32,7 @@ Nodes and reusable groups can be disabled without deleting them. This makes it e
 - Topological execution with branches and convergences.
 - Model-aware generation, editing, inpainting, references, masks, audio, LoRAs, resolution, aspect ratio, and native model settings.
 - AI analysis with text outputs and workflow variables.
+- A native Prompt Enhancer node that uses Wan2GP's model-specific enhancer modes and accepts reference images only when the selected mode supports them.
 - Wan2GP postprocessors discovered from the installed catalog.
 - Safe typed FFmpeg operations using Wan2GP-managed binaries.
 - Runtime image, video, audio, and mask previews.
